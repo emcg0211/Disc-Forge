@@ -114,7 +114,41 @@ Full plan + per-step byte deltas: `docs/toast_mutation_plan.md`. Driver:
   which reintroduces the integration variable the bisection isolates; build it
   after S0–S7 hardware results localize the boundary (recipe in the plan doc).
 
-## Phase 2 — libbluray IG source analysis (in progress, parallel to burns)
+## Phase 2 — libbluray IG source analysis ✅ COMPLETE (2026-06-01)
+
+Full writeup: `docs/libbluray_ig_analysis.md` (libbluray @ `4dfb9b0`). Top
+hardware-divergence candidates, ranked:
+
+1. **Invisible-normal + defSelBtn=0xFFFF.** libbluray `_find_selected_button_id`
+   falls back to "first valid button" (spec §5.9.8.3 step 3), so it always
+   auto-selects one and draws it. A button is visible only in SELECTED/ACTIVATED
+   state; our NORMAL object is 0xFFFF (nothing). If the LG honors 0xFFFF
+   literally (no auto-select), **all buttons render NORMAL = blank** → exactly
+   "navy, no buttons." Toast uses the same model but **its text is in the
+   video**, so it looks populated. Ours is in the IG → invisible. *Strongest
+   single explanation.* Fix (Phase 6): visible normal-state object and/or a real
+   defaultSelectedButtonIdRef.
+2. **DTS/STC ignored in software, enforced in hardware.** In-mux IG decodes with
+   `stc=-1` (bluray.c:2109) → the DTS gate is bypassed; libbluray inits the menu
+   as soon as a DS completes. All our DTS work (12012 lead, ODS chains) is
+   invisible to VLC, hardware-only. → DTS is untestable in VLC; keep Toast-exact.
+3. **composition/selection_timeout_pts "not implemented"** (gc:883). We send 0
+   (= Toast). Hardware interprets it; never set to video PTS (v1.10.8 reject).
+4. **Object size / decode-time.** RLE buffer grows dynamically in SW (no cap);
+   HW has fixed buffers. Toast objects 16×16…79×46; ours 800×90 (~50×). =
+   Phase-4 **S2** hypothesis.
+
+Other confirmed: ICS-first segment order required (orphans dropped);
+`data_len==buf_len` exact or whole IC rejected (ig_decode:280); IG PID must be
+0x1400–0x141F; **WDS not consulted by IG button render** (safe to omit, matches
+Toast); sparse PDS ok in SW (S4 tests HW); ICS PTS must be ≥ clip in_time or the
+seek filter wipes it (why encoder stamps IG PTS = first video PTS).
+
+## Status / next
+Phases 1, 4 (S0–S7), 2 done. **User action: burn S0 (gate), then S1/S2.** Report
+per disc whether DS1 (mutated) and DS0 (control) show buttons. Then: build S8 if
+needed, and implement Phase 6 fixes (start with the visible-normal-state /
+defSelBtn change — the #1 candidate). S8 build recipe in toast_mutation_plan.md.
 Deep libbluray source analysis (`src/libbluray/decoders/*.c`, `hdmv/*.c`):
 every conditional that can suppress a button, lax spec interpretations,
 "player should do X but we don't" comments, the button selection state machine,
