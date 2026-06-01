@@ -79,8 +79,17 @@ node tools/ig-toolkit/mutate.js toast.pack remove-wds       <ds>
 node tools/ig-toolkit/mutate.js toast.pack set-wds          <ds> <id> <x> <y> <w> <h>
 node tools/ig-toolkit/mutate.js toast.pack set-ods-dims     <ds> <objIdx> <w> <h>
 node tools/ig-toolkit/mutate.js toast.pack set-ods-bitmap   <ds> <objIdx> <png> [--fit]
+node tools/ig-toolkit/mutate.js toast.pack set-ods-rect     <ds> <objIdx> [fillIdx] [borderIdx] [borderPx]
 node tools/ig-toolkit/mutate.js toast.pack set-ods-from     <ds> <objIdx> <fromPack> <fromDs> <fromObjIdx>
+node tools/ig-toolkit/mutate.js toast.pack replace-palette  <ds> "id:Y,Cr,Cb,T;id:Y,Cr,Cb,T;..."
+node tools/ig-toolkit/mutate.js toast.pack replace-nav      <ds> <bog> <btn> PLAY_PL|JUMP_TITLE|RAW <arg|hex24>
+node tools/ig-toolkit/mutate.js toast.pack set-button-count <ds> <n> [btnW] [btnH] [gap] [vidW] [vidH]
 ```
+
+`set-ods-rect` writes a solid fill + border (no ffmpeg/font needed) — the bitmap
+our app emits when no text font is present. `set-button-count` trims/extends BOGs
+and ODS objects and re-lays-out centered. The Phase-4 driver
+`build_mutation_discs.js` chains these to produce the S0–S8 bisection discs.
 
 `<ds>` is the display-set index shown by `extract.js`. `set-ods-bitmap`
 quantizes the PNG against *that display set's own palette* via ffmpeg.

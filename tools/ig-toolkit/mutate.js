@@ -209,6 +209,100 @@ const OPS = {
     setOdsRle(seg, w, h, px); markDirty(unit);
     return `DS${ds} ODS#${objIdx} bitmap ← ${path.basename(png)} (${w}x${h}, rle ${seg.decoded.rleHex.length / 2}B)`;
   },
+  'replace-palette'(m, [ds, spec]) {
+    // spec: "id:Y,Cr,Cb,T;id:Y,Cr,Cb,T;..."  — replaces ALL entries
+    const { unit, seg } = findSeg(m, +ds, lib.SEG.PDS);
+    const entries = spec.split(';').filter(Boolean).map(part => {
+      const [id, rest] = part.split(':');
+      const [Y, Cr, Cb, T] = rest.split(',').map(Number);
+      return { id: +id, Y, Cr, Cb, T };
+    });
+    seg.decoded.entries = entries; markDirty(unit);
+    return `DS${ds} palette replaced with ${entries.length} entries`;
+  },
+  'replace-nav'(m, [ds, bog, btn, kind, arg]) {
+    const { unit, seg } = findSeg(m, +ds, lib.SEG.ICS);
+    const { button } = getButton(seg, +bog, +btn);
+    let cmd = Buffer.alloc(12);
+    if (kind === 'PLAY_PL') cmd.writeUInt32BE(0x22800000, 0), cmd.writeUInt32BE(+arg, 4);
+    else if (kind === 'JUMP_TITLE') cmd.writeUInt32BE(0x21810000, 0), cmd.writeUInt32BE(+arg, 4);
+    else if (kind === 'RAW') cmd = lib.unhex(arg.padEnd(24, '0')).subarray(0, 12);
+    else throw new Error(`unknown nav kind ${kind}`);
+    button.navCmds = [lib.hex(cmd)]; markDirty(unit);
+    return `DS${ds} BOG${bog} btn${btn} navCmds → [${kind}(${arg})]`;
+  },
+  'set-button-count'(m, [ds, n, btnW = 800, btnH = 90, gap = 30, vidW = 1920, vidH = 1080]) {
+    n = +n; btnW = +btnW; btnH = +btnH; gap = +gap; vidW = +vidW; vidH = +vidH;
+    const { unit: icsUnit, seg: ics } = findSeg(m, +ds, lib.SEG.ICS);
+    const page = ics.decoded.pages[0];
+    const cur = page.bogs.length;
+    if (n < 1) throw new Error('n must be >= 1');
+    if (n < cur) {
+      page.bogs = page.bogs.slice(0, n);
+    } else if (n > cur) {
+      const tmpl = page.bogs[cur - 1];
+      for (let i = cur; i < n; i++) page.bogs.push(JSON.parse(JSON.stringify(tmpl)));
+    }
+    // centered vertical layout
+    const totalH = n * btnH + (n - 1) * gap;
+    const topY = Math.round((vidH - totalH) / 2);
+    const btnX = Math.round((vidW - btnW) / 2);
+    page.bogs.forEach((bog, i) => {
+      const button = bog.buttons[0];
+      button.id = i + 1;
+      button.numericSelectValue = i + 1;
+      button.x = btnX;
+      button.y = topY + i * (btnH + gap);
+      button.upper = ((i - 1 + n) % n) + 1;
+      button.lower = ((i + 1) % n) + 1;
+      button.left = i + 1;
+      button.right = i + 1;
+      button.selStart = i; button.selEnd = i;
+      button.actStart = i; button.actEnd = i;
+      bog.defaultValidButtonIdRef = i + 1;
+    });
+    markDirty(icsUnit);
+    // trim/extend ODS objects to match (objectId 0..n-1)
+    const dsObj = m.displaySets[+ds];
+    const odsSegs = [];
+    for (const ui of dsObj.units) {
+      const u = m.units.find(x => x.pesIndex === ui);
+      u.segments.forEach(s => { if (s.type === lib.SEG.ODS) odsSegs.push({ u, s }); });
+    }
+    if (n < odsSegs.length) {
+      // remove trailing ODS objects from their units
+      for (let i = n; i < odsSegs.length; i++) {
+        const { u, s } = odsSegs[i];
+        u.segments = u.segments.filter(x => x !== s);
+        markDirty(u);
+      }
+    } else if (n > odsSegs.length && odsSegs.length > 0) {
+      // clone the last ODS into the last ODS unit for the extra objects
+      const last = odsSegs[odsSegs.length - 1];
+      for (let i = odsSegs.length; i < n; i++) {
+        const clone = JSON.parse(JSON.stringify(last.s));
+        clone.decoded.objectId = i;
+        last.u.segments.push(clone);
+        markDirty(last.u);
+      }
+    }
+    return `DS${ds} button count → ${n} (was ${cur}), centered ${btnW}x${btnH}, ODS objs → ${n}`;
+  },
+  'set-ods-rect'(m, [ds, objIdx, fillIdx = 2, borderIdx = 1, borderPx = 3]) {
+    // Solid-fill button with a border, at the ODS's current dims — mirrors
+    // menu-builder.renderButtonPixels (the actual bitmap our app emits when no
+    // text font is available). Self-contained: no ffmpeg/PNG.
+    const { unit, seg } = findSeg(m, +ds, lib.SEG.ODS, +objIdx);
+    const w = seg.decoded.width, h = seg.decoded.height;
+    fillIdx = +fillIdx; borderIdx = +borderIdx; borderPx = +borderPx;
+    const px = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const border = x < borderPx || x >= w - borderPx || y < borderPx || y >= h - borderPx;
+      px[y * w + x] = border ? borderIdx : fillIdx;
+    }
+    setOdsRle(seg, w, h, px); markDirty(unit);
+    return `DS${ds} ODS#${objIdx} rect fill=${fillIdx} border=${borderIdx}x${borderPx} (${w}x${h}, rle ${seg.decoded.rleHex.length / 2}B)`;
+  },
   'set-ods-from'(m, [ds, objIdx, fromPack, fromDs, fromObjIdx]) {
     const { unit, seg } = findSeg(m, +ds, lib.SEG.ODS, +objIdx);
     const fm = loadManifest(fromPack);

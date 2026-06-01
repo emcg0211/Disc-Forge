@@ -102,18 +102,17 @@ function repack(packDir, reencodeAll) {
   return Buffer.concat(out);
 }
 
-function buildIso(bdmvDir, outIso) {
-  // xorriso native mode, UDF, matching how v17/v19 packaging produced burnable BD ISOs.
-  const args = [
-    '-as', 'mkisofs',
-    '-udf',
-    '-V', 'BDROM',
-    '-o', outIso,
-    bdmvDir,
-  ];
-  const r = spawnSync('xorriso', args, { encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`xorriso failed:\n${r.stderr.slice(-600)}`);
-  return r.stderr; // xorriso logs to stderr
+function buildIso(treeDir, outIso, volName = 'BDROM') {
+  // Use macOS hdiutil makehybrid -udf — produces a real UDF filesystem (verified:
+  // NSR02/*UDF/BEA01/TEA01), which standalone BD players (LG BP350) require. This
+  // matches Toast's filesystem and what the Disc Forge app uses for the final image.
+  // (Note: this machine's `xorriso -as mkisofs -udf` silently emits ISO9660-only.)
+  // treeDir must contain BDMV/ at its top level → BDMV lands at the ISO root.
+  if (fs.existsSync(outIso)) fs.unlinkSync(outIso);
+  const r = spawnSync('hdiutil', ['makehybrid', '-udf', '-udf-volume-name', volName, '-o', outIso, treeDir],
+    { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (r.status !== 0 || !fs.existsSync(outIso)) throw new Error(`hdiutil makehybrid failed:\n${(r.stderr || '').slice(-800)}`);
+  return r.stderr;
 }
 
 function main() {

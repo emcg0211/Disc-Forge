@@ -88,7 +88,33 @@ menu; investigate in Phase 3).
   WDS simply optional? (Phase 4 step can add/remove WDS to test.)
 - The DTS nibble 0x0 — enforced or ignored by LG firmware?
 
-## Next: Phase 2 (awaiting greenlight)
+## Phase 4 — Toast-mutation bisection discs ✅ BUILT (2026-06-01)
+
+Full plan + per-step byte deltas: `docs/toast_mutation_plan.md`. Driver:
+`tools/ig-toolkit/build_mutation_discs.js`.
+
+- **S0–S7 ISOs built** at `~/Desktop/toast_S{0..7}.iso` (+ `.diff.txt` each),
+  all proper **UDF** (verified `NSR02/*UDF/BEA01/TEA01`). ~584 MB each.
+- **Design:** mutate Toast's **DS1** (3-button menu) one dimension per step;
+  leave **DS0** (1-button) untouched as an in-disc control on every disc.
+- **S0 gate verified:** repackaged menu m2ts is byte-identical to Toast's
+  01200.m2ts; full BDMV (incl. 583 MB main feature) preserved. **User burns S0
+  first** — it must render like the retail disc or the pipeline is suspect.
+- Steps: S1 our bitmaps (Toast dims) · S2 our 800×90 dims · S3 our positions ·
+  S4 our 4-entry palette · S5 our 2-button count · S6 our PLAY_PL nav · S7 add
+  00002 playlist/clipinf. Each diff confirmed to change only its intended field.
+- **Prime suspect = S2** (object size): Toast's IG objects are tiny highlight
+  glyphs (16×16…79×46) over video-baked text; ours are 800×90 full-text buttons
+  (~50× area). If rendering survives S1 but dies at S2 → LG object-size /
+  decode-time / window limit.
+- **Filesystem lesson:** `xorriso -as mkisofs -udf` on this machine emits
+  ISO9660-only (no UDF) — unusable for BD test discs. Use `hdiutil makehybrid
+  -udf` (now what `repack.js buildIso` does).
+- **S8 (our video) deferred by design** — needs video re-mux + IG re-timing,
+  which reintroduces the integration variable the bisection isolates; build it
+  after S0–S7 hardware results localize the boundary (recipe in the plan doc).
+
+## Phase 2 — libbluray IG source analysis (in progress, parallel to burns)
 Deep libbluray source analysis (`src/libbluray/decoders/*.c`, `hdmv/*.c`):
 every conditional that can suppress a button, lax spec interpretations,
 "player should do X but we don't" comments, the button selection state machine,
