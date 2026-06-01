@@ -633,8 +633,11 @@ function buildIGDisplaySet({ composition, palette, windows, objects, pid, pts })
   // s->complete stays 0, and GC_CTRL_INIT_MENU is never called.
   // CC must be continuous across all PES packets for the same PID.
   //
-  // ics_dts = decode deadline = ics_pts − 11664 ticks (≈130ms, 4 frames at 29.97fps).
-  const icsDts = Math.max(0, (pts || 0) - 11664);
+  // ics_dts = decode deadline = ics_pts − 12012 ticks. This is Toast's exact
+  // measured ICS PTS−DTS lead (Phase-1 forensics; reproduced in S11), preferred
+  // over the earlier spec-theoretical 11664 (~130ms) so our PES framing matches
+  // the proven-on-LG Toast disc byte-for-byte. See docs/menu_research_progress.md.
+  const icsDts = Math.max(0, (pts || 0) - 12012);
 
   // ODS decode pipeline (v1.10.15 fix, v1.10.16 refinement):
   //   Each ODS has DTS+PTS (flags2=0xC0), chained: ODS[0].DTS=ICS.DTS, ODS[i].DTS=ODS[i-1].PTS.
@@ -653,9 +656,14 @@ function buildIGDisplaySet({ composition, palette, windows, objects, pid, pts })
   });
   const endPts = decodeClock;  // last ODS PTS, or icsDts if there are no ODS
 
-  // Build segments in order: ICS(0), PDS(1), WDS(2), ODS[0..n](3..n+2), END(n+3)
-  const segments = [ics, pds, wds, ...ods, end];
-  const odsStartIdx = 3;  // first ODS index in segments array
+  // Build segments in order. WDS is OPTIONAL for IG button rendering — the IG
+  // render path never consults it (Phase-2 libbluray analysis), and Toast/S11
+  // omit it entirely. Include WDS only when windows are actually supplied:
+  //   with WDS:    ICS(0), PDS(1), WDS(2), ODS[0..n](3..), END
+  //   without WDS: ICS(0), PDS(1),         ODS[0..n](2..), END
+  const hasWds = Array.isArray(windows) && windows.length > 0;
+  const segments = hasWds ? [ics, pds, wds, ...ods, end] : [ics, pds, ...ods, end];
+  const odsStartIdx = hasWds ? 3 : 2;  // first ODS index in segments array
   const lastIdx = segments.length - 1;
   let cc = 0;
   const pesPackets = segments.map((seg, idx) => {
