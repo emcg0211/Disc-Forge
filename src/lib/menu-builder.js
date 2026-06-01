@@ -1061,10 +1061,99 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
   return outputPath;
 }
 
+// ── Button preview rendering (v1.13.0 — for the template editor UI) ───────────────
+// YCbCr-601 (limited range) → RGB, matching the derivation used to author the
+// template fill colors.
+function _yuvToRgb(Y, Cr, Cb) {
+  const cl = v => Math.max(0, Math.min(255, Math.round(v)));
+  return [
+    cl(1.164 * (Y - 16) + 1.596 * (Cr - 128)),
+    cl(1.164 * (Y - 16) - 0.813 * (Cr - 128) - 0.391 * (Cb - 128)),
+    cl(1.164 * (Y - 16) + 2.018 * (Cb - 128)),
+  ];
+}
+
+// Standard IEEE CRC-32 (reflected) — required for PNG chunk checksums. (Distinct
+// from mpegCrc32 above, which uses the MPEG-TS polynomial.)
+let _crcTable = null;
+function _crc32(buf) {
+  if (!_crcTable) {
+    _crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      _crcTable[n] = c >>> 0;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) crc = _crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function _pngChunk(type, data) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const typeBuf = Buffer.from(type, 'ascii');
+  const body = Buffer.concat([typeBuf, data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(_crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+// Encode an 8-bit RGB buffer (w*h*3) as a PNG (color type 2). No deps beyond zlib.
+function _encodePng(rgb, w, h) {
+  const zlib = require('zlib');
+  const sig  = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 2;   // color type RGB
+  // [10] compression=0, [11] filter=0, [12] interlace=0
+  // Prepend filter byte (0 = none) to each scanline.
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0;
+    rgb.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
+  }
+  const idat = zlib.deflateSync(raw);
+  return Buffer.concat([sig, _pngChunk('IHDR', ihdr), _pngChunk('IDAT', idat), _pngChunk('IEND', Buffer.alloc(0))]);
+}
+
+/**
+ * Render a single menu button at a template's settings as a PNG — for the
+ * template editor's preview pane. Mirrors exactly how the button is drawn on the
+ * disc (same renderButtonBitmap/renderButtonPixels path and palette), so the
+ * preview is faithful. Does not require ffmpeg (the PNG is encoded in-process);
+ * passing ffmpegPath only affects text rendering, which currently falls back to
+ * a solid fill when the bundled ffmpeg lacks drawtext.
+ *
+ * @param {object} opts
+ * @param {object} opts.template   - validated template
+ * @param {'normal'|'selected'} [opts.state] - button state to preview (default 'selected')
+ * @param {string} [opts.label]    - button label (default 'Play Episode 1')
+ * @param {string} [opts.ffmpegPath] - optional ffmpeg for text rendering
+ * @returns {Buffer} PNG image of one button (template button width × height)
+ */
+function renderButtonPreviewPng({ template, state = 'selected', label = 'Play Episode 1', ffmpegPath = null } = {}) {
+  if (!template || !template.button || !template.palette) {
+    throw new Error('renderButtonPreviewPng: a validated template is required');
+  }
+  const style = styleFromTemplate(template);
+  const w = style.w, h = style.h;
+  const idx = renderButtonBitmap(label, state, w, h, ffmpegPath, style);
+  const pal = {};
+  for (const e of template.palette) pal[e.id] = _yuvToRgb(e.Y, e.Cr, e.Cb);
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < w * h; i++) {
+    const c = pal[idx[i]] || [0, 0, 0];
+    rgb[i * 3] = c[0]; rgb[i * 3 + 1] = c[1]; rgb[i * 3 + 2] = c[2];
+  }
+  return _encodePng(rgb, w, h);
+}
+
 module.exports = {
   buildMenuDisplaySet,
   generateMenuVideo,
   validateBackgroundImage,
+  renderButtonPreviewPng,
   MENU_VIDEO,
   MENU_ENCODE_ARGS,
   extractFirstVideoPTS,

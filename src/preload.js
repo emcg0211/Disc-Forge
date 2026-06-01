@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld('discForge', {
   buildMultiTitleDisc: (args) => ipcRenderer.invoke('build-multi-title-disc', args),
   revealInFinder:   (filePath)=> ipcRenderer.invoke('reveal-in-finder', filePath),
 
+  // Menu templates (v1.13.0). Renderer-side editor UI is Phase 4.
+  templateList:      ()                 => ipcRenderer.invoke('template-list'),
+  templateLoad:      (id)               => ipcRenderer.invoke('template-load', id),
+  templateSave:      (template)         => ipcRenderer.invoke('template-save', template),
+  templateDuplicate: (id, newName)      => ipcRenderer.invoke('template-duplicate', { id, newName }),
+  templateDelete:    (id)               => ipcRenderer.invoke('template-delete', id),
+  templatePreviewButton: (opts)         => ipcRenderer.invoke('template-preview-button', opts),
+
   // Build events
   onBuildProgress:    (cb) => ipcRenderer.on('build-progress',  (_, d) => cb(d)),
   onFFmpegProgress:   (cb) => ipcRenderer.on('ffmpeg-progress', (_, d) => cb(d)),
