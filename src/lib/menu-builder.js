@@ -27,41 +27,79 @@ const fs   = require('fs');
 const { execFileSync } = require('child_process');
 
 const { buildNavCmd, buildIGDisplaySet, encodePDS, encodeODS, encodeWDS, encodeICS, encodeEND, encodeRLE, wrapInPES, buildSegment, SEG } = require('./ig-encoder');
+const { defaultTemplate, resolveFontPath } = require('./template');
 
-// ── Palette definition ─────────────────────────────────────────────────────────
-// YCbCr-601 values. The 5th PDS byte (T) is ALPHA: **T=255 = opaque, T=0 = fully
-// transparent** (confirmed empirically by the S11 disc — every entry T=255 rendered
-// solid in VLC). The pre-Phase-6 palette had the fill/border entries at T=0, i.e.
-// fully transparent → the buttons were invisible (Finding C). All entries are now
-// T=255 so the button bitmaps actually paint. (See docs/menu_research_progress.md.)
-const PALETTE = [
-  { id: 0, Y: 16,  Cr: 128, Cb: 128, T: 255 },  // background near-black (opaque; unused by button bitmaps)
-  { id: 1, Y: 235, Cr: 128, Cb: 128, T: 255 },  // white border (both states)
-  { id: 2, Y: 112, Cr: 184, Cb:  42, T: 255 },  // orange-yellow — NORMAL button fill
-  { id: 3, Y:  45, Cr: 103, Cb: 171, T: 255 },  // dark slate blue — SELECTED button fill
-];
+// ── Template-derived defaults ───────────────────────────────────────────────────
+// All look-and-feel values (palette, geometry, font, fill colors, background) now
+// live in templates (src/assets/templates/*.json — see src/lib/template.js). The
+// "Classic" template holds the exact v1.12.0 production look, so the module-level
+// constants below are derived from it. This keeps the default code path (and the
+// public exports PALETTE/BTN_W/BTN_H/ENTRY_RGB/FONT_PATH) byte-identical to v1.12.0
+// while letting buildMenuDisplaySet accept an alternate template.
+//
+// The palette's 5th PDS byte (T) is ALPHA: T=255 = opaque, T=0 = fully transparent
+// (confirmed by the S11 disc — every entry T=255 rendered solid in VLC). Templates
+// are validated to keep all entries opaque (validateTemplate enforces T=255), so the
+// button bitmaps always paint. (See docs/menu_research_progress.md.)
+const CLASSIC = defaultTemplate();
 
-// ── Button geometry ───────────────────────────────────────────────────────────
-const BTN_W   = 800;
-const BTN_H   = 90;
-const BTN_GAP = 30;  // vertical gap between buttons
-const BORDER  = 3;   // border thickness in pixels
+// Palette (4 opaque YCbCr-601 entries): 0=near-black bg, 1=white border,
+// 2=NORMAL fill, 3=SELECTED fill.
+const PALETTE = CLASSIC.palette;
+
+// ── Button geometry (Classic defaults) ──────────────────────────────────────────
+const BTN_W   = CLASSIC.button.width;
+const BTN_H   = CLASSIC.button.height;
+const BTN_GAP = CLASSIC.button.gap;     // vertical gap between buttons
+const BORDER  = CLASSIC.button.border;  // border thickness in pixels
 
 // ── Text rendering constants ──────────────────────────────────────────────────
 // Font for drawtext (SIL Open Font License — Inter Regular).
-const FONT_PATH = path.join(__dirname, '../assets/fonts/MenuFont.ttf');
+const FONT_PATH = resolveFontPath(CLASSIC.font.file);
 
-// RGB equivalents of our YCbCr palette entries — used for ffmpeg bg and pixel quantization.
-// Derived from: R = 1.164*(Y-16) + 1.596*(Cr-128), G = ..., B = ...
+// RGB equivalents of the Classic fill palette entries — used for ffmpeg bg and pixel
+// quantization. Derived from YCbCr in the template JSON.
 const ENTRY_RGB = {
-  2: [201, 100,   0],  // orange — NORMAL fill (idx 2)
-  3: [  0,  37, 120],  // dark slate blue — SELECTED fill (idx 3)
+  [CLASSIC.button.normalFill.entry]:   CLASSIC.button.normalFill.rgb,
+  [CLASSIC.button.selectedFill.entry]: CLASSIC.button.selectedFill.rgb,
 };
 // Hex strings for ffmpeg color= filter
 const ENTRY_HEX = {
-  2: 'c96400',  // orange (normal)
-  3: '002578',  // dark blue (selected)
+  [CLASSIC.button.normalFill.entry]:   CLASSIC.button.normalFill.hex,
+  [CLASSIC.button.selectedFill.entry]: CLASSIC.button.selectedFill.hex,
 };
+
+/**
+ * Build a render "style" — the look values renderButtonBitmap/renderButtonPixels
+ * need — from a template object. Defaults to the Classic template so callers that
+ * pass nothing keep the v1.12.0 behavior exactly.
+ *
+ * @param {object} [tpl] - a validated template (defaults to Classic)
+ * @returns {object} { w, h, gap, border, borderEntry, normalEntry, selEntry,
+ *                      normalRGB, selRGB, normalHex, selHex, fontPath, fontSizeRatio, fontColor }
+ */
+function styleFromTemplate(tpl = CLASSIC) {
+  const b = tpl.button;
+  return {
+    w:            b.width,
+    h:            b.height,
+    gap:          b.gap,
+    border:       b.border,
+    borderEntry:  b.borderEntry,
+    normalEntry:  b.normalFill.entry,
+    selEntry:     b.selectedFill.entry,
+    normalRGB:    b.normalFill.rgb,
+    selRGB:       b.selectedFill.rgb,
+    normalHex:    b.normalFill.hex,
+    selHex:       b.selectedFill.hex,
+    fontPath:     resolveFontPath(tpl.font.file),
+    fontSizeRatio: tpl.font.sizeRatio,
+    fontColor:    tpl.font.color,
+  };
+}
+
+// The Classic-derived style: the default for the render helpers.
+const DEFAULT_STYLE = styleFromTemplate(CLASSIC);
 
 function _colorDist2(r1, g1, b1, r2, g2, b2) {
   return (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2;
@@ -76,17 +114,22 @@ function _colorDist2(r1, g1, b1, r2, g2, b2) {
  * @param {number} w          - button width in pixels
  * @param {number} h          - button height in pixels
  * @param {string} ffmpegPath - path to ffmpeg binary
+ * @param {object} [style]    - render style (from styleFromTemplate); defaults to Classic
  * @returns {Uint8Array} palette-indexed pixel array (w*h bytes)
  */
-function renderButtonBitmap(text, state, w, h, ffmpegPath) {
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || !fs.existsSync(FONT_PATH) || !text) {
-    return renderButtonPixels(w, h, state);
+function renderButtonBitmap(text, state, w, h, ffmpegPath, style = DEFAULT_STYLE) {
+  const fontPath = style.fontPath;
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || !fs.existsSync(fontPath) || !text) {
+    return renderButtonPixels(w, h, state, style);
   }
 
-  const fillEntry = state === 'normal' ? 2 : 3;  // normal=idx2, selected/activated=idx3
-  const fillRGB   = ENTRY_RGB[fillEntry];
-  const bgHex     = ENTRY_HEX[fillEntry];
-  const fontSize  = Math.round((h - BORDER * 2) * 0.55);
+  const isNormal  = state === 'normal';
+  const fillEntry = isNormal ? style.normalEntry : style.selEntry;
+  const fillRGB   = isNormal ? style.normalRGB   : style.selRGB;
+  const bgHex     = isNormal ? style.normalHex   : style.selHex;
+  const border    = style.border;
+  const borderEntry = style.borderEntry;
+  const fontSize  = Math.round((h - border * 2) * style.fontSizeRatio);
 
   // Escape characters that break ffmpeg filter syntax
   const safeText = (text || '')
@@ -102,33 +145,33 @@ function renderButtonBitmap(text, state, w, h, ffmpegPath) {
       '-f', 'lavfi',
       '-i', `color=c=0x${bgHex}:size=${w}x${h}:rate=1`,
       '-frames:v', '1',
-      '-vf', `drawtext=fontfile=${FONT_PATH}:text='${safeText}':fontsize=${fontSize}:fontcolor=white:x=(w-tw)/2:y=(h-th)/2`,
+      '-vf', `drawtext=fontfile=${fontPath}:text='${safeText}':fontsize=${fontSize}:fontcolor=${style.fontColor}:x=(w-tw)/2:y=(h-th)/2`,
       '-f', 'rawvideo', '-pix_fmt', 'rgb24',
       'pipe:1',
     ], { stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {
-    return renderButtonPixels(w, h, state);
+    return renderButtonPixels(w, h, state, style);
   }
 
   if (!rawData || rawData.length < w * h * 3) {
-    return renderButtonPixels(w, h, state);
+    return renderButtonPixels(w, h, state, style);
   }
 
-  // Quantize RGB pixels to nearest palette entry (1=white vs fillEntry)
+  // Quantize RGB pixels to nearest palette entry (border/text entry vs fillEntry)
   const WHITE = [255, 255, 255];
   const pixels = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
     const r = rawData[i * 3], g = rawData[i * 3 + 1], b = rawData[i * 3 + 2];
     const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
     const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
-    pixels[i] = dWhite <= dFill ? 1 : fillEntry;
+    pixels[i] = dWhite <= dFill ? borderEntry : fillEntry;
   }
 
-  // Overlay 3px white border
+  // Overlay the border
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (x < BORDER || x >= w - BORDER || y < BORDER || y >= h - BORDER) {
-        pixels[y * w + x] = 1;
+      if (x < border || x >= w - border || y < border || y >= h - border) {
+        pixels[y * w + x] = borderEntry;
       }
     }
   }
@@ -149,16 +192,18 @@ const IG_PID = 0x1400;
  * @param {number} w - button width
  * @param {number} h - button height
  * @param {'normal'|'selected'|'activated'} state
+ * @param {object} [style] - render style (from styleFromTemplate); defaults to Classic
  * @returns {Uint8Array} palette-indexed pixels (w*h bytes)
  */
-function renderButtonPixels(w, h, state) {
-  const bgIdx     = state === 'normal' ? 2 : 3;   // normal=idx2 fill, selected/activated=idx3 fill
-  const borderIdx = 1;                              // white border
+function renderButtonPixels(w, h, state, style = DEFAULT_STYLE) {
+  const bgIdx     = state === 'normal' ? style.normalEntry : style.selEntry;
+  const borderIdx = style.borderEntry;
+  const border    = style.border;
   const pixels    = new Uint8Array(w * h);
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const isBorder = x < BORDER || x >= w - BORDER || y < BORDER || y >= h - BORDER;
+      const isBorder = x < border || x >= w - border || y < border || y >= h - border;
       pixels[y * w + x] = isBorder ? borderIdx : bgIdx;
     }
   }
@@ -190,30 +235,38 @@ function renderButtonPixels(w, h, state) {
  * @param {number}   opts.pts          - PTS for the display set in 90kHz ticks (default 0)
  * @param {string[]} opts.labels       - button label text array
  * @param {string}   opts.ffmpegPath   - ffmpeg binary path for text rendering
+ * @param {object}   opts.template     - menu template (look/geometry/palette); defaults to Classic
  * @returns {Buffer} TS-packetized IG PES stream (188-byte packets)
  */
-function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null } = {}) {
+function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null, template = null } = {}) {
   const playlistIds = playlists || [pl1, pl2];
   const N = playlistIds.length;
 
+  // Template controls look + geometry + palette. Absent → Classic (v1.12.0).
+  const tpl   = template || CLASSIC;
+  const style = styleFromTemplate(tpl);
+  const btnW  = style.w;
+  const btnH  = style.h;
+  const btnGap = style.gap;
+
   // Auto-layout: center all buttons vertically, left-align buttons horizontally
-  const totalH = N * BTN_H + (N - 1) * BTN_GAP;
+  const totalH = N * btnH + (N - 1) * btnGap;
   const topY   = Math.round((videoHeight - totalH) / 2);
-  const btnX   = Math.round((videoWidth  - BTN_W)  / 2);
-  const btnY   = Array.from({ length: N }, (_, i) => topY + i * (BTN_H + BTN_GAP));
+  const btnX   = Math.round((videoWidth  - btnW)  / 2);
+  const btnY   = Array.from({ length: N }, (_, i) => topY + i * (btnH + btnGap));
 
   // Visible normal-state model (v1.12.0 / S11): TWO bitmaps per button.
-  // obj_id (2i)=NORMAL fill (idx 2), obj_id (2i+1)=SELECTED fill (idx 3).
+  // obj_id (2i)=NORMAL fill, obj_id (2i+1)=SELECTED fill (entries from template).
   const objects = [];
   const bogs = [];
   for (let i = 0; i < N; i++) {
     const label = (labels[i] && labels[i].trim()) ? labels[i].trim() : `Play Episode ${i + 1}`;
     const normalObjId = 2 * i;
     const selObjId    = 2 * i + 1;
-    objects.push({ objectId: normalObjId, version: 0, width: BTN_W, height: BTN_H,
-                   pixels: renderButtonBitmap(label, 'normal',   BTN_W, BTN_H, ffmpegPath) });
-    objects.push({ objectId: selObjId,    version: 0, width: BTN_W, height: BTN_H,
-                   pixels: renderButtonBitmap(label, 'selected', BTN_W, BTN_H, ffmpegPath) });
+    objects.push({ objectId: normalObjId, version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(label, 'normal',   btnW, btnH, ffmpegPath, style) });
+    objects.push({ objectId: selObjId,    version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(label, 'selected', btnW, btnH, ffmpegPath, style) });
 
     // One BOG per button, circular up/down navigation.
     // Button IDs are 1-based per BD spec (valid range [1, 0xEFFF]; 0 is reserved).
@@ -261,7 +314,7 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
         bogs,
       }],
     },
-    palette: { paletteId: 0, version: 0, entries: PALETTE },
+    palette: { paletteId: 0, version: 0, entries: tpl.palette },
     // No WDS — the IG button render path never consults it (matches Toast/S11).
     windows: null,
     objects,
@@ -857,6 +910,7 @@ module.exports = {
   rewriteVideoPesDts,
   renderButtonBitmap,
   renderButtonPixels,
+  styleFromTemplate,
   convertTsBdFormat,
   injectIGIntoM2ts,
   patchPmtForIG,
@@ -866,8 +920,9 @@ module.exports = {
   patchMplsForStill,
   findPtsInsertionPoint,
   IG_PID,
-  BTN_W, BTN_H,
+  BTN_W, BTN_H, BTN_GAP, BORDER,
   PALETTE,
   ENTRY_RGB,
+  ENTRY_HEX,
   FONT_PATH,
 };

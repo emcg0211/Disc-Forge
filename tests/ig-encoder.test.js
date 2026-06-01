@@ -1289,6 +1289,222 @@ console.log('\n=== 16: buildMenuDisplaySet production pattern (v1.12.0 — S11 v
   }
 }
 
+// ─── Shared IG-segment parse helpers for the template sections ─────────────────
+// Self-contained re-implementations (the section-16 versions are block-scoped).
+function tplParseIG(m2tsBuffer) {
+  const IG_PID = 0x1400;
+  let cur = null;
+  const counts = { ics: 0, pds: 0, wds: 0, ods: 0, end: 0 };
+  const odsIds = [];
+  const res = { counts, odsIds, defSelBtn: null, buttonIds: [], objRefs: [],
+                icsPts: null, paletteT: null };
+  function flush(chunks, hdrLen) {
+    const full = Buffer.concat(chunks);
+    if (full.length < 9 + hdrLen + 3) return;
+    const ptsV = (full[7] & 0x80)
+      ? (((full[9] & 0x0E) << 29) | (full[10] << 22) | ((full[11] & 0xFE) << 14) | (full[12] << 7) | ((full[13] & 0xFE) >> 1))
+      : null;
+    const seg = full.slice(9 + hdrLen);
+    const t = seg[0];
+    const segLen = (seg[1] << 8) | seg[2];
+    if (t === 0x18) {
+      counts.ics++;
+      if (res.icsPts === null) res.icsPts = ptsV;
+      const body = seg.slice(3, 3 + segLen);
+      const numPages = body[26];
+      if (numPages >= 1) {
+        let po = 27;
+        res.defSelBtn = (body[po + 15] << 8) | body[po + 16];
+        const numBogs = body[po + 20];
+        po += 21;
+        for (let bg = 0; bg < numBogs; bg++) {
+          const numBtns = body[po + 2];
+          po += 3;
+          for (let bn = 0; bn < numBtns; bn++) {
+            res.buttonIds.push((body[po] << 8) | body[po + 1]);
+            res.objRefs.push({
+              normal: (body[po + 17] << 8) | body[po + 18],
+              sel:    (body[po + 23] << 8) | body[po + 24],
+              act:    (body[po + 29] << 8) | body[po + 30],
+            });
+            const numNavCmds = (body[po + 33] << 8) | body[po + 34];
+            po += 35 + numNavCmds * 12;
+          }
+        }
+      }
+    } else if (t === 0x14) {
+      counts.pds++;
+      if (res.paletteT === null) {
+        const body = seg.slice(3, 3 + segLen);
+        res.paletteT = [];
+        for (let o = 2; o + 4 < body.length; o += 5) res.paletteT.push(body[o + 4]);
+      }
+    } else if (t === 0x17) counts.wds++;
+    else if (t === 0x15) { counts.ods++; odsIds.push((seg[3] << 8) | seg[4]); }
+    else if (t === 0x80) counts.end++;
+  }
+  let i = 0;
+  while (i + 188 <= m2tsBuffer.length) {
+    if (m2tsBuffer[i] !== 0x47) { i++; continue; }
+    const pid = ((m2tsBuffer[i + 1] & 0x1F) << 8) | m2tsBuffer[i + 2];
+    if (pid !== IG_PID) { i += 188; continue; }
+    const pusi = (m2tsBuffer[i + 1] & 0x40) !== 0;
+    const ha = (m2tsBuffer[i + 3] & 0x20) !== 0;
+    const ps = ha ? (4 + 1 + m2tsBuffer[i + 4]) : 4;
+    const pl = m2tsBuffer.slice(i + ps, i + 188);
+    if (pusi) {
+      if (cur) flush(cur.chunks, cur.hdrLen);
+      if (pl.length >= 9 && pl[0] === 0 && pl[1] === 0 && pl[2] === 1) cur = { hdrLen: pl[8], chunks: [pl] };
+      else cur = null;
+    } else if (cur) cur.chunks.push(pl);
+    i += 188;
+  }
+  if (cur) flush(cur.chunks, cur.hdrLen);
+  return res;
+}
+
+// ─── 17: template data model (src/lib/template.js) ─────────────────────────────
+console.log('\n=== 17: template data model (template.js) ===');
+{
+  const tplMod = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
+  const { loadTemplate, validateTemplate, defaultTemplate } = tplMod;
+
+  // defaultTemplate() === Classic
+  const classic = defaultTemplate();
+  assertEq(classic.id, 'classic', 'defaultTemplate(): id = classic');
+  assertEq(classic.palette.length, 4, 'Classic: 4 palette entries');
+  assert(classic.palette.every(e => e.T === 255), 'Classic: all palette entries opaque (T=255)');
+  assertEq(classic.button.width, 800, 'Classic: button width = 800 (v1.12.0 geometry)');
+  assertEq(classic.button.height, 90, 'Classic: button height = 90');
+  assertEq(classic.button.normalFill.hex, 'c96400', 'Classic: normal fill hex = c96400 (orange)');
+  assertEq(classic.button.selectedFill.hex, '002578', 'Classic: selected fill hex = 002578 (blue)');
+  assertEq(classic.background.type, 'solid', 'Classic: background type = solid');
+  assertEq(classic.background.color, '1a1a2e', 'Classic: background color = 1a1a2e (navy)');
+
+  // All three built-ins load + validate.
+  for (const id of ['classic', 'minimal', 'theatrical']) {
+    const t = loadTemplate(id);
+    assertEq(t.id, id, `loadTemplate('${id}'): id round-trips`);
+    assert(validateTemplate(t) === t, `validateTemplate('${id}'): returns the object (valid)`);
+    assert(t.palette.every(e => e.T === 255), `'${id}': palette fully opaque`);
+    const ids = t.palette.map(e => e.id);
+    assert(ids.includes(t.button.normalFill.entry), `'${id}': normalFill.entry references a palette id`);
+    assert(ids.includes(t.button.selectedFill.entry), `'${id}': selectedFill.entry references a palette id`);
+    assert(ids.includes(t.button.borderEntry), `'${id}': borderEntry references a palette id`);
+  }
+  assertEq(loadTemplate('minimal').background.type, 'solid', 'Minimal: solid background');
+  assertEq(loadTemplate('theatrical').background.type, 'image', 'Theatrical: image background');
+
+  // loadTemplate freshly each call (callers may mutate their copy safely).
+  const a = defaultTemplate(); a.button.width = 1;
+  assertEq(defaultTemplate().button.width, 800, 'defaultTemplate(): returns a fresh object (no shared mutation)');
+
+  // loadTemplate by absolute path.
+  const p = path.join(__dirname, '..', 'src', 'assets', 'templates', 'minimal.json');
+  assertEq(loadTemplate(p).id, 'minimal', 'loadTemplate(absolutePath): loads by path');
+
+  // ── validateTemplate rejects malformed templates ──
+  function rejects(mutate, name) {
+    const t = defaultTemplate();
+    mutate(t);
+    let threw = false;
+    try { validateTemplate(t); } catch { threw = true; }
+    assert(threw, `validateTemplate rejects: ${name}`);
+  }
+  rejects(t => { delete t.id; }, 'missing id');
+  rejects(t => { t.name = ''; }, 'empty name');
+  rejects(t => { t.palette = t.palette.slice(0, 3); }, 'palette length != 4');
+  rejects(t => { t.palette[2].T = 0; }, 'transparent palette entry (T=0)');
+  rejects(t => { t.palette[1].Y = 300; }, 'palette channel out of range');
+  rejects(t => { t.palette[2].id = 9; }, 'palette entry id out of order');
+  rejects(t => { t.button.normalFill.entry = 7; }, 'normalFill.entry not in palette');
+  rejects(t => { t.button.borderEntry = 7; }, 'borderEntry not in palette');
+  rejects(t => { t.button.width = 0; }, 'button width = 0');
+  rejects(t => { t.button.border = 9999; }, 'border larger than button');
+  rejects(t => { t.button.normalFill.hex = 'xyz'; }, 'fill hex not 6 hex digits');
+  rejects(t => { t.font.sizeRatio = 2; }, 'font.sizeRatio > 1');
+  rejects(t => { t.background.type = 'video'; }, 'background.type invalid');
+  rejects(t => { t.background.fit = 'squish'; }, 'background.fit invalid');
+  rejects(t => { t.background.color = 'navy'; }, 'background.color not hex');
+
+  // loadTemplate throws on unknown id.
+  let threw = false;
+  try { loadTemplate('does-not-exist'); } catch { threw = true; }
+  assert(threw, 'loadTemplate throws on unknown id');
+}
+
+// ─── 18: byte-identity + Minimal/Theatrical through prod path (v1.13.0) ─────────
+console.log('\n=== 18: template byte-identity + Minimal/Theatrical encoder output ===');
+{
+  const crypto = require('crypto');
+  const { buildMenuDisplaySet } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+  const { loadTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
+
+  // Golden hashes of the v1.12.0 production encoder output (no-ffmpeg deterministic
+  // path = the actual shipped output, since the bundled ffmpeg lacks drawtext and
+  // falls back to renderButtonPixels). Captured before the v1.13.0 template refactor.
+  const GOLDEN = {
+    1: 'ae0907b249ee9f6c5791f2e28248670b4344ff6c981e3f00b3f5c5b40278b133',
+    2: 'afc5bc7942601b0568e7b3bcd1dd36c7181b8e93fec936b1492ba481f18be62c',
+    3: '6832f2d45d128ce1b95dfac61068acc3e101e2d78017035cd0170bbc999fe9bf',
+    5: '4affbf4969330d6c193b83b1dc43774de01255c767bc7df54cca2ba14219cd5e',
+  };
+  const cfgs = [
+    { playlists: [1],             pts: 54000000, labels: ['Episode 1'] },
+    { playlists: [1, 2],          pts: 54000000, labels: ['Episode 1', 'Episode 2'] },
+    { playlists: [1, 2, 3],       pts: 48000000, labels: ['A', 'B', 'C'] },
+    { playlists: [1, 2, 3, 4, 5], pts: 54000000, labels: ['a', 'b', 'c', 'd', 'e'] },
+  ];
+  const sha = b => crypto.createHash('sha256').update(b).digest('hex');
+  for (const c of cfgs) {
+    const N = c.playlists.length;
+    // Default (no template) must equal v1.12.0 golden.
+    assertEq(sha(buildMenuDisplaySet(c)), GOLDEN[N],
+      `${N}-episode: default path byte-identical to v1.12.0 golden`);
+    // Explicit Classic template must also equal the golden.
+    assertEq(sha(buildMenuDisplaySet({ ...c, template: loadTemplate('classic') })), GOLDEN[N],
+      `${N}-episode: explicit Classic template byte-identical to v1.12.0 golden`);
+  }
+
+  // Classic structural pre-flight (the v1.12.0 contract).
+  const dsC = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'] });
+  const rc = tplParseIG(dsC);
+  assertEq(rc.counts.ics, 1, 'Classic: displaySets/ICS = 1');
+  assert(JSON.stringify(rc.odsIds.slice().sort((a, b) => a - b)) === '[0,1,2,3]', 'Classic: ODS object_ids = [0,1,2,3]');
+  assertEq(rc.counts.wds, 0, 'Classic: no WDS');
+  assertEq(rc.defSelBtn, 1, 'Classic: defaultSelectedButtonIdRef = 1');
+  assertEq(rc.icsPts, 54000000, 'Classic: ICS PES PTS = in_time');
+
+  // Minimal and Theatrical: structurally identical encoder contract, different palette.
+  for (const id of ['minimal', 'theatrical']) {
+    const tpl = loadTemplate(id);
+    const ds2 = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'], template: tpl });
+    const r = tplParseIG(ds2);
+    assertEq(r.counts.ics, 1, `${id}: exactly 1 ICS (single display set)`);
+    assertEq(r.counts.pds, 1, `${id}: exactly 1 PDS`);
+    assertEq(r.counts.end, 1, `${id}: exactly 1 END`);
+    assertEq(r.counts.wds, 0, `${id}: no WDS`);
+    assertEq(r.counts.ods, 4, `${id}: 2N ODS (4 for 2 buttons)`);
+    assert(JSON.stringify(r.odsIds.slice().sort((a, b) => a - b)) === '[0,1,2,3]', `${id}: ODS object_ids = [0,1,2,3]`);
+    assertEq(r.defSelBtn, 1, `${id}: defaultSelectedButtonIdRef = 1`);
+    assertEq(r.icsPts, 54000000, `${id}: ICS PES PTS = in_time`);
+    assert(r.paletteT && r.paletteT.length === 4 && r.paletteT.every(t => t === 255),
+      `${id}: emitted PDS — every palette entry T=255 (opaque)`);
+    r.objRefs.forEach((ref, i) => {
+      assertEq(ref.normal, 2 * i, `${id} button[${i}]: normal_state = ${2 * i}`);
+      assertEq(ref.sel, 2 * i + 1, `${id} button[${i}]: selected_state = ${2 * i + 1}`);
+      assertEq(ref.act, ref.sel, `${id} button[${i}]: activated_state == selected_state`);
+    });
+  }
+
+  // A non-Classic palette actually changes the emitted PDS Y values (proves the
+  // template's palette flows through to the encoder, not a hardcoded one).
+  const mi = loadTemplate('minimal');
+  const dsM = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'], template: mi });
+  const dsClassic2 = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'] });
+  assert(Buffer.compare(dsM, dsClassic2) !== 0, 'Minimal: emitted IG differs from Classic (palette/geometry flows through)');
+}
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(50)}`);
