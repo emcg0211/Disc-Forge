@@ -11,15 +11,15 @@
  *     → renderButtonBitmap(text,state) or renderButtonPixels(state)
  *     → ig-encoder.buildIGDisplaySet() assembles the full BD IG display set
  *
- * Palette:
- *   0 = transparent (background video shows through)
+ * Palette (all entries opaque, T=255):
+ *   0 = background near-black (opaque; unused by the button bitmaps)
  *   1 = white (text + border)
- *   2 = orange (selected button fill, YCbCr → RGB ≈ 201,100,0)
- *   3 = dark slate blue (normal button fill, YCbCr → RGB ≈ 0,37,120)
+ *   2 = orange      — NORMAL button fill   (YCbCr → RGB ≈ 201,100,0)
+ *   3 = dark slate blue — SELECTED button fill (YCbCr → RGB ≈ 0,37,120)
  *
  * Button layout (auto-centered, 800×90 each, 30px gap):
- *   Button i (obj i*3/i*3+1/i*3+2): Episode i+1 → PLAY_PL(i+1)
- *   Single WDS window covers all buttons (BD spec: max 2 windows per page).
+ *   Button i → obj_id 2i (normal) + 2i+1 (selected); Episode i+1 → PLAY_PL(i+1).
+ *   No WDS (the IG render path ignores it; matches Toast/S11).
  */
 
 const path = require('path');
@@ -29,14 +29,16 @@ const { execFileSync } = require('child_process');
 const { buildNavCmd, buildIGDisplaySet, encodePDS, encodeODS, encodeWDS, encodeICS, encodeEND, encodeRLE, wrapInPES, buildSegment, SEG } = require('./ig-encoder');
 
 // ── Palette definition ─────────────────────────────────────────────────────────
-// YCbCr-601 values. T=0 opaque, T=255 fully transparent.
-// Entry 3 was T=160 (63% transparent) — near-invisible on dark background.
-// Fixed to T=0 (opaque dark slate blue) so both buttons are clearly visible.
+// YCbCr-601 values. The 5th PDS byte (T) is ALPHA: **T=255 = opaque, T=0 = fully
+// transparent** (confirmed empirically by the S11 disc — every entry T=255 rendered
+// solid in VLC). The pre-Phase-6 palette had the fill/border entries at T=0, i.e.
+// fully transparent → the buttons were invisible (Finding C). All entries are now
+// T=255 so the button bitmaps actually paint. (See docs/menu_research_progress.md.)
 const PALETTE = [
-  { id: 0, Y: 16,  Cr: 128, Cb: 128, T: 255 },  // transparent (background shows through)
-  { id: 1, Y: 235, Cr: 128, Cb: 128, T:   0 },  // white border (both states)
-  { id: 2, Y: 112, Cr: 184, Cb:  42, T:   0 },  // orange-yellow (selected fill)
-  { id: 3, Y:  45, Cr: 103, Cb: 171, T:   0 },  // dark slate blue (normal fill)
+  { id: 0, Y: 16,  Cr: 128, Cb: 128, T: 255 },  // background near-black (opaque; unused by button bitmaps)
+  { id: 1, Y: 235, Cr: 128, Cb: 128, T: 255 },  // white border (both states)
+  { id: 2, Y: 112, Cr: 184, Cb:  42, T: 255 },  // orange-yellow — NORMAL button fill
+  { id: 3, Y:  45, Cr: 103, Cb: 171, T: 255 },  // dark slate blue — SELECTED button fill
 ];
 
 // ── Button geometry ───────────────────────────────────────────────────────────
@@ -52,13 +54,13 @@ const FONT_PATH = path.join(__dirname, '../assets/fonts/MenuFont.ttf');
 // RGB equivalents of our YCbCr palette entries — used for ffmpeg bg and pixel quantization.
 // Derived from: R = 1.164*(Y-16) + 1.596*(Cr-128), G = ..., B = ...
 const ENTRY_RGB = {
-  2: [201, 100,   0],  // orange (selected fill)
-  3: [  0,  37, 120],  // dark slate blue (normal fill)
+  2: [201, 100,   0],  // orange — NORMAL fill (idx 2)
+  3: [  0,  37, 120],  // dark slate blue — SELECTED fill (idx 3)
 };
 // Hex strings for ffmpeg color= filter
 const ENTRY_HEX = {
-  2: 'c96400',  // orange
-  3: '002578',  // dark blue
+  2: 'c96400',  // orange (normal)
+  3: '002578',  // dark blue (selected)
 };
 
 function _colorDist2(r1, g1, b1, r2, g2, b2) {
@@ -81,7 +83,7 @@ function renderButtonBitmap(text, state, w, h, ffmpegPath) {
     return renderButtonPixels(w, h, state);
   }
 
-  const fillEntry = state === 'normal' ? 3 : 2;
+  const fillEntry = state === 'normal' ? 2 : 3;  // normal=idx2, selected/activated=idx3
   const fillRGB   = ENTRY_RGB[fillEntry];
   const bgHex     = ENTRY_HEX[fillEntry];
   const fontSize  = Math.round((h - BORDER * 2) * 0.55);
@@ -150,7 +152,7 @@ const IG_PID = 0x1400;
  * @returns {Uint8Array} palette-indexed pixels (w*h bytes)
  */
 function renderButtonPixels(w, h, state) {
-  const bgIdx     = state === 'normal' ? 3 : 2;   // 3=gray, 2=red
+  const bgIdx     = state === 'normal' ? 2 : 3;   // normal=idx2 fill, selected/activated=idx3 fill
   const borderIdx = 1;                              // white border
   const pixels    = new Uint8Array(w * h);
 
@@ -166,9 +168,18 @@ function renderButtonPixels(w, h, state) {
 /**
  * Build the complete IG display set for an N-button menu.
  * Buttons are auto-laid out and centered vertically on the frame.
- * State model (v1.10.19): object_id i = the one (selected/highlighted) bitmap for
- * button i; normal_state is invisible (object_id_ref=0xFFFF) and activated_state
- * reuses the selected bitmap.
+ *
+ * State model (v1.12.0 — the S11 "visible normal-state" pattern, proven in VLC):
+ * every button gets TWO ODS objects so it is visible at rest AND when selected:
+ *   button i → obj_id (2i)   = NORMAL  bitmap (palette fill idx 2)
+ *              obj_id (2i+1) = SELECTED bitmap (palette fill idx 3)
+ *   button i refs: normal=2i, selected=2i+1, activated=2i+1 (reuses selected).
+ * page.defaultSelectedButtonIdRef = 1 so the first button starts highlighted
+ * (libbluray and compliant players then move selection with the arrow keys).
+ * Single epoch_start display set, no WDS (IG render path ignores it; matches
+ * Toast/S11). ICS PTS = the menu clip's first video PTS (passed as `pts`); the
+ * encoder derives ICS DTS = PTS−12012 and the PDS/ODS/END decode chain.
+ * See docs/menu_research_progress.md "Phase 6 — production encoder refactor".
  *
  * @param {object}   opts
  * @param {number}   opts.videoWidth   - video frame width (default 1920)
@@ -191,46 +202,43 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
   const btnX   = Math.round((videoWidth  - BTN_W)  / 2);
   const btnY   = Array.from({ length: N }, (_, i) => topY + i * (BTN_H + BTN_GAP));
 
-  // Button state model (v1.10.19 isolation change vs v1.10.17 baseline):
-  // emit ONE bitmap per button — the 'selected' (highlighted) state — and make
-  // normal_state invisible (object_id_ref=0xFFFF). selected_state and
-  // activated_state both reference that single bitmap. This isolates the one
-  // untested-in-isolation hypothesis from v1.10.18's 8 simultaneous changes
-  // (every other byte stays at v1.10.17 values).
-  const bitmaps = playlistIds.map((_, i) => {
-    const label = (labels[i] && labels[i].trim()) ? labels[i].trim() : `Play Episode ${i + 1}`;
-    return renderButtonBitmap(label, 'selected', BTN_W, BTN_H, ffmpegPath);
-  });
-
-  // One BOG per button, circular up/down navigation.
-  // Button IDs are 1-based per BD spec (valid range [1, 0xEFFF]; 0 is reserved).
-  const bogs = playlistIds.map((pl, i) => ({
-    defaultValidButtonIdRef: i + 1,
-    buttons: [{
-      id:                 i + 1,
-      numericSelectValue: i + 1,
-      autoActionFlag:     false,
-      x:                  btnX,
-      y:                  btnY[i],
-      upperBtnId:         ((i - 1 + N) % N) + 1,
-      lowerBtnId:         ((i + 1) % N) + 1,
-      leftBtnId:          i + 1,
-      rightBtnId:         i + 1,
-      // normal_state invisible — no object until the button is selected.
-      normalStartObjId:   0xFFFF,  normalEndObjId: 0xFFFF,  normalRepeat: false,
-      selectedSoundId:    0xFF,
-      // selected and activated share the single bitmap (objectId = i).
-      selStartObjId:      i,  selEndObjId: i,  selRepeat: false,
-      activatedSoundId:   0xFF,
-      actStartObjId:      i,  actEndObjId: i,
-      navCmds: [buildNavCmd('PLAY_PL', pl)],
-    }],
-  }));
-
-  // ODS objects: one per button (the selected/highlighted bitmap), objectId 0..N-1.
+  // Visible normal-state model (v1.12.0 / S11): TWO bitmaps per button.
+  // obj_id (2i)=NORMAL fill (idx 2), obj_id (2i+1)=SELECTED fill (idx 3).
   const objects = [];
+  const bogs = [];
   for (let i = 0; i < N; i++) {
-    objects.push({ objectId: i, version: 0, width: BTN_W, height: BTN_H, pixels: bitmaps[i] });
+    const label = (labels[i] && labels[i].trim()) ? labels[i].trim() : `Play Episode ${i + 1}`;
+    const normalObjId = 2 * i;
+    const selObjId    = 2 * i + 1;
+    objects.push({ objectId: normalObjId, version: 0, width: BTN_W, height: BTN_H,
+                   pixels: renderButtonBitmap(label, 'normal',   BTN_W, BTN_H, ffmpegPath) });
+    objects.push({ objectId: selObjId,    version: 0, width: BTN_W, height: BTN_H,
+                   pixels: renderButtonBitmap(label, 'selected', BTN_W, BTN_H, ffmpegPath) });
+
+    // One BOG per button, circular up/down navigation.
+    // Button IDs are 1-based per BD spec (valid range [1, 0xEFFF]; 0 is reserved).
+    bogs.push({
+      defaultValidButtonIdRef: i + 1,
+      buttons: [{
+        id:                 i + 1,
+        numericSelectValue: i + 1,
+        autoActionFlag:     false,
+        x:                  btnX,
+        y:                  btnY[i],
+        upperBtnId:         ((i - 1 + N) % N) + 1,
+        lowerBtnId:         ((i + 1) % N) + 1,
+        leftBtnId:          i + 1,
+        rightBtnId:         i + 1,
+        // normal_state visible (its own bitmap) so the button shows at rest.
+        normalStartObjId:   normalObjId,  normalEndObjId: normalObjId,  normalRepeat: false,
+        selectedSoundId:    0xFF,
+        // selected and activated share the highlighted bitmap (obj 2i+1).
+        selStartObjId:      selObjId,  selEndObjId: selObjId,  selRepeat: false,
+        activatedSoundId:   0xFF,
+        actStartObjId:      selObjId,  actEndObjId: selObjId,
+        navCmds: [buildNavCmd('PLAY_PL', playlistIds[i])],
+      }],
+    });
   }
 
   return buildIGDisplaySet({
@@ -247,16 +255,15 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
         id: 0, version: 0,
         uoMask: Buffer.alloc(8),
         animationFrameRateCode:      0,
-        defaultSelectedButtonIdRef:  0xFFFF,  // no default selection: first arrow press reveals nearest button
-        defaultActivatedButtonIdRef: 0xFFFF,
+        defaultSelectedButtonIdRef:  1,       // first button starts highlighted (S11/Finding C)
+        defaultActivatedButtonIdRef: 0xFFFF,  // none auto-activated (Toast convention)
         paletteIdRef: 0,
         bogs,
       }],
     },
     palette: { paletteId: 0, version: 0, entries: PALETTE },
-    // Single window spanning all buttons (BD spec allows max 2 windows per page;
-    // one large window covering all buttons is the simplest valid choice for N≥3).
-    windows: [{ id: 0, x: btnX, y: topY, width: BTN_W, height: totalH }],
+    // No WDS — the IG button render path never consults it (matches Toast/S11).
+    windows: null,
     objects,
     pid: IG_PID,
     pts,

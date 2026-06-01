@@ -179,3 +179,270 @@ especially the DTS nibble, the no-WDS layout, and defSelBtn=0xFFFF.
 - Clannad reference: `reference_clannad/BDMV/` (software-validated)
 - Beach Boys reference: `~/Desktop/reference_bdmv/`
 - Our latest output discs: `~/Desktop/v110*_test.iso`
+
+---
+
+## S8 VLC failure — root cause (Jun 1 2026, measured not assumed)
+
+S8 played navy with **no buttons** in VLC and logged
+`graphics_processor.c:380: ERROR: updating complete (non-consumed) IG composition`.
+S7 (same IG bytes, Toast video) renders. Measured both with `extract.js` + a raw
+PID/PTS scan of the muxed `01200.m2ts`. Two findings:
+
+### Finding A — PRIMARY (the VLC breaker): both display sets are one contiguous block
+The two builders place the IG differently in the transport stream:
+
+| disc | builder | DS0 IG packets | DS1 IG packets | layout |
+|------|---------|----------------|----------------|--------|
+| S7 (works) | `build_mutation_discs.js` → `repack` (mutates Toast m2ts **in place**) | pkt 777–788 | pkt 1644–1659 | **interleaved with video, ~860 pkts apart** (Toast's original layout) |
+| S8 (fails) | `build_s8.js` → `injectIGIntoM2ts` (extract IG, **re-inject as one blob** after pkt 10) | pkt 10–21 | pkt 22–37 | **contiguous: DS1 immediately follows DS0** |
+
+In-mux IG is decoded with `gc_decode_ts(..., stc = -1)` (`bluray.c:2108`), so the
+DTS/STC gate is bypassed (`graphics_processor.c:540`) and libbluray decodes
+packets **in arrival order, ignoring PTS/DTS**. With DS0 and DS1 contiguous in the
+same read, DS1's ICS (`_decode_ics`, ~`graphics_processor.c:380`) arrives **before
+DS0's completed composition is consumed** by `_run_gc(INIT_MENU)` → the exact
+"updating complete (non-consumed) IG composition" error → DS1 clobbers DS0 mid-
+decode and no menu paints. S7 works only because Toast's interleaving puts ~860
+video packets between the sets, so each completes and is consumed in its own read.
+
+**This is almost certainly a software-only (stc=-1) artifact.** Real hardware
+schedules decode by DTS in its transport demux (Phase-2 analysis §3), so on the LG
+the two sets would decode at their separate DTS (45045 ticks / ~0.5 s apart) and
+the contiguity would not matter. So the contiguous layout breaks VLC but may be
+fine on hardware — which is why we keep a two-DS disc as a hardware diagnostic.
+
+### Finding B — SECONDARY (hardware-relevant timing, not the VLC breaker): wrong offset anchor
+`build_s8.js` set `offset = firstVideoPTS − earliest IG **DTS**`, landing
+**ICS DTS = firstVideoPTS** and **ICS PTS = firstVideoPTS + 12012**. Toast's
+genuine convention (measured on S7) is the inverse: **ICS PTS = in_time
+(= firstVideoPTS)** with DTS 12012 earlier, and PDS/ODS legitimately a hair
+before in_time. Measured:
+
+```
+            video first PTS   DS0 ICS PTS   DS0 ICS DTS
+S7 (Toast)     120030           120030        108018   (ICS PTS == in_time)  ✔ Toast model
+S8 (ours)    54000000         54012012      54000000   (ICS DTS == in_time)  -> 12012 late
+```
+
+This does not break VLC (it ignores DTS, and both ICS PTS pass the `m2ts_filter`
+`pts ≥ in_time` check). But it deviates from Toast and is corrected for hardware
+fidelity: anchor the **earliest ICS PTS** to `firstVideoPTS` (offset = firstVideoPTS
+− min(ICS PTS) = 54000000 − 120030 = 53879970). The navy clip's first video PTS is
+genuinely 54000000 (tsMuxeR's default 600 s start) — verified by raw scan, not the
+`extractFirstVideoPTS` 54000000 *fallback*; PID 0x1011 PUSI carries PTS=54000000.
+
+### Fixes applied
+- `build_s8.js`: anchor offset on earliest **ICS PTS** (Finding B). Kept two-DS
+  layout — S8 stays the hardware diagnostic for the DTS-scheduled two-set case.
+- `build_s9.js` (new): **single display set** (DS1 only — our real 2-button menu;
+  DS0 was just Toast's vestigial 1-button/22×22 top-menu glyph, unmutated). One
+  contiguous DS has no DS-to-DS consume conflict, so it renders in VLC *and* is the
+  robust hardware candidate. ISO → `~/Desktop/menu-tests/toast_S9.iso`.
+
+### Finding C — REVEALED after A+B fixed: invisible objects (Phase-2 #1, now confirmed in SW)
+With Finding A fixed (single-DS S9), VLC's `graphics_processor.c:380` error is
+**gone** — the composition parses and is consumed cleanly (`displaySets=1`,
+2 buttons, segRT ok). But S9 still shows **navy, no buttons** in VLC. Measured why:
+
+- Button id=1/2: `normalStart=normalEnd=0xFFFF` (no normal-state object →
+  invisible unless selected) but `selStart=selEnd=actStart=actEnd=0` (a real
+  800×90 object 0 for the selected/activated state). `defaultSelectedButtonIdRef
+  = 0xFFFF`; libbluray's lax fallback auto-selects button 1 and renders object 0.
+- **Palette (id 0, 4 entries): only index 0 is opaque (`T=255`); indices 1, 2, 3
+  are all fully transparent (`T=0`).** The 800×90 button fill uses indices 1/2/3,
+  so the selected object renders but every pixel is transparent → nothing visible.
+
+So **the IG objects are genuinely invisible**, exactly the Phase-2 TL;DR #1
+prediction. S0–S7 only looked populated because they sit on **Toast's** menu
+video (text baked into the video); the IG objects were invisible there too. On
+our navy clip there is no video text, so the invisible objects = navy blank.
+**This confirms in software what S8 was built to test on hardware.** It is the
+*render* layer (Phase-6), independent of the timing/structural fixes above.
+
+**Phase-6 next step (the now-decisive fix):** give buttons a **visible
+normal-state object** and/or set a real `default_selected_button_id_ref`, AND
+make the button-fill palette entries **opaque** (`T=255`, currently `T=0`).
+Either alone is insufficient: with a real defSel but a transparent palette the
+selected button still paints nothing; with an opaque palette but invisible
+normal-state only the (auto-)selected button shows. Robust menu = visible normal
+objects + opaque palette.
+
+### Net result of this session
+- **Timing bug (B): fixed** — S8 now anchors ICS PTS to in_time, Toast-correct.
+- **Structural non-consumed bug (A): fixed** — S9 (single-DS) eliminates the
+  `graphics_processor.c:380` error; composition parses & consumes cleanly in VLC.
+- **Render bug (C): diagnosed, not yet fixed** — invisible objects (transparent
+  palette + 0xFFFF normal/defSel). This is the real remaining blocker and the
+  Phase-6 target. Neither S8 nor S9 will show buttons until C is fixed.
+
+Hardware-burn diagnostics ready: **S8** (two-DS, timing-fixed — tests whether a
+DTS-scheduling HW demux is happy with two contiguous sets) and **S9** (single-DS,
+timing-fixed — the clean single-menu candidate; also tests whether the LG honours
+`defSel=0xFFFF` literally). Expect both to be blank until C is fixed; the value of
+burning them is to confirm A/B no longer cause a *load/parse* rejection on HW.
+
+---
+
+## S10 — palette + defSel fix (Jun 1 2026): FIRST IG button to render in VLC ✅
+
+`tools/ig-toolkit/build_s10.js` = S9 (single DS1, navy video, ICS PTS anchored to
+in_time) **plus the Finding-C render fix**:
+- **Opaque palette** — all 4 entries `T=255` (was: only idx 0 opaque). Format
+  `id:Y,Cr,Cb,T`: `0:16,128,128,255` (navy bg, unused by rect) ·
+  `1:235,128,128,255` (white border = set-ods-rect borderIdx) ·
+  `2:80,120,150,255` (blue fill = fillIdx) · `3:140,120,150,255` (highlight).
+- **`default_selected_button_id_ref = 1`** (was 0xFFFF) via `OPS['set-defsel']`.
+
+Verified in the built ISO: `displaySets=1`, `defSel=1`, all palette `T=255`,
+button id1 sel→obj0 / id2 sel→obj1, both `normalStart=0xFFFF`.
+
+**VLC result (measured, screenshot `/tmp/vlc_test/S10.png`): button 1 RENDERS** —
+an 800×90 rounded rectangle, opaque blue-gray fill + white border, centered at
+(560,435) on the navy background. No `graphics_processor.c:380` error. **Button 2
+(560,555) is invisible**, exactly as expected: it is not the selected button and
+its `normal_state` object is 0xFFFF.
+
+**This is the first time our IG menu paints a visible button in software.** It
+confirms Finding C end-to-end: the transparent palette (+ `defSel=0xFFFF`) was the
+sole remaining render blocker once A (single-DS) and B (ICS-PTS anchor) were fixed.
+
+### What it tells us for production (Phase-6)
+- libbluray's auto-select fallback works (defSel=1 → button 1 selected & painted).
+- **Only the selected button is visible** because every button's `normal_state`
+  is 0xFFFF. To show *all* buttons at rest, production must give each button a
+  **visible normal-state object** (not just selected/activated). The robust menu =
+  visible normal objects for every button + opaque palette. defSel then only
+  controls which one starts highlighted.
+- Still untested on hardware: whether the LG honours `defSel` + paints the
+  selected object the same way (Phase-2 noted the LG may differ on auto-select and
+  DTS scheduling). S10 is now the strongest hardware-burn candidate.
+
+Burn diagnostics ready in `~/Desktop/menu-tests/`: **S8** (two-DS, timing-fixed),
+**S9** (single-DS, defSel=0xFFFF + transparent palette — blank by design), **S10**
+(single-DS + opaque palette + defSel=1 — renders button 1 in VLC). Burn scripts
+`burn_s8/s9/s10.sh` in `/tmp/vlc_test/`.
+
+---
+
+## S11 — visible normal-state (Jun 1 2026): FULL menu renders in VLC ✅✅
+
+`tools/ig-toolkit/build_s11.js` = S10 + **a visible normal-state object on every
+button** (the production menu pattern). S10 showed only the auto-selected button;
+a real menu needs all buttons visible at rest with the selected one distinguished.
+
+**Structure** — single DS1, 4 ODS objects (all 800×90 set-ods-rect):
+`obj0` btn1 NORMAL (fill idx2 blue) · `obj1` btn1 SELECTED (fill idx3 highlight) ·
+`obj2` btn2 NORMAL (fill idx2) · `obj3` btn2 SELECTED (fill idx3); border idx1
+(white) on all. Button refs: btn1 `normal=0 sel/act=1`, btn2 `normal=2 sel/act=3`.
+defSel=1, opaque palette, ICS PTS anchored to in_time, navy video — all from S10.
+
+`mutate.js` has no "add ODS" op, so `expandToVisibleNormal()` does direct manifest
+surgery: clone the ODS PES-unit template to go 2→4 objects, renumber object_ids
+0..3, reorder DS1 to ICS·PDS·ODS0-3·END (dropping the empty unit Toast left after
+its 3rd ODS was trimmed by set-button-count), re-fill via set-ods-rect, set button
+state refs via set-state, chain the ODS decode PTS/DTS, re-thread the continuity
+counter. **Verified in the built ISO before testing:** `displaySets=1`,
+`ODS objIds=[0,1,2,3]`, `segRT=true`, `btn1 N0/S1/A1`, `btn2 N2/S3/A3`, `defSel=1`.
+
+**VLC result (measured, fullscreen capture `/tmp/vlc_test/S11_fs.png`): BOTH
+buttons render, visually distinct.** Sampled fill colours match the designed
+palette to ±1 (BT.601):
+- btn1 (560,435), SELECTED → RGB (132,142,189) — highlight idx3 (Y=140). ✔
+- btn2 (560,555), NORMAL   → RGB (62,72,119)  — blue idx2 (Y=80). ✔
+- white borders (idx1) on both; navy (26,27,47) background. No IG decoder errors.
+
+**This is the full production menu pattern confirmed end-to-end in software.**
+Every button is visible at rest; the selected one is highlighted; selection moves
+between them (up/down nav refs already set by set-button-count). The complete
+recipe for a working IG menu on our own video is now established:
+1. single display set (Finding A);
+2. ICS PTS = clip in_time (Finding B);
+3. opaque palette + a real defaultSelectedButtonIdRef (Finding C / S10);
+4. **a visible normal-state object per button** (S11) — the piece that makes a
+   real multi-button menu legible without relying on auto-select.
+
+### Remaining unknowns (hardware)
+Still untested on the LG BP350: whether it (a) renders the selected+normal objects
+like libbluray, (b) honours defSel, (c) is happy with the single-DS / in-mux IG
+timing. S11 is now the lead hardware-burn candidate; S8/S9/S10 remain as the
+A/B/C-isolating diagnostics. Burn scripts `burn_s8…s11.sh` in `/tmp/vlc_test/`.
+
+### Productionising (for the encoder, beyond this research toolkit)
+S11's `expandToVisibleNormal` is hand-rolled for 2 buttons but written N-extensibly
+(2 ODS per button: normal=2*i, selected=2*i+1). Folding this pattern + the opaque
+palette + in_time ICS anchoring + single-DS emission into `src/lib/menu-builder.js`
+is the Phase-6 encoder work; real button *text* (vs solid rect fill) is the next
+content step (render glyphs into the ODS bitmaps instead of set-ods-rect).
+
+---
+
+## Phase 6 — production encoder refactor (Jun 1 2026): parity with S11 ✅✅✅
+
+Folded the S11 winning pattern into the shipping encoder so a disc built through
+the **production code path** (`src/lib/menu-builder.js` `buildMenuDisplaySet` +
+`src/lib/ig-encoder.js` `buildIGDisplaySet` + the production inject/patch chain)
+renders identically to the hand-built S11.
+
+### Code changes
+**`src/lib/menu-builder.js`**
+- `PALETTE`: all 4 entries now `T=255` (opaque). The 5th PDS byte is ALPHA
+  (255=opaque, proven by S11); the old palette had the fill/border entries at
+  `T=0` (transparent) → invisible buttons (Finding C). Fixed the inverted comment.
+- Fill mapping flipped to the spec: `normal → idx 2`, `selected/activated → idx 3`
+  (in both `renderButtonBitmap` and `renderButtonPixels`).
+- `buildMenuDisplaySet`: **2N ODS** — for button i, `obj 2i` = NORMAL bitmap,
+  `obj 2i+1` = SELECTED bitmap. Button refs `normal=2i, selected=2i+1,
+  activated=2i+1`. `defaultSelectedButtonIdRef = 1` (was 0xFFFF). `windows: null`
+  (drop WDS). Single epoch_start DS (unchanged). N parametric 1–9.
+**`src/lib/ig-encoder.js` `buildIGDisplaySet`**
+- ICS DTS lead `pts − 11664` → **`pts − 12012`** (Toast's measured PTS−DTS lead,
+  matches S11). ODS decode_time=3 chain, PDS PTS=ICS DTS, END PTS=last ODS PTS —
+  all unchanged.
+- WDS now **optional**: emitted only when `windows` is non-empty. With no windows
+  the order is `ICS · PDS · ODS×2N · END` (matches Toast/S11); callers that pass
+  windows still get a WDS (so the lower-level unit tests are unaffected).
+
+Finding B's "ICS PTS = clip in_time" was **already wired** in production:
+`src/main.js` and `tools/menu_inject.js` both pass `pts: extractFirstVideoPTS(videoM2ts)`.
+And production always emitted a single display set, so Finding A never applied to it.
+
+### Tests — 291 pass (was 205)
+`tests/ig-encoder.test.js` updated to assert the NEW pattern and expanded
+(181 → 252): block 9/14/15 DTS constant 11664→12012; block 16 rewritten to assert
+single ICS/PDS, **2N ODS**, no WDS, `defSel=1`, button refs `normal=2i / sel=2i+1
+/ act=sel`, all palette `T=255`, ICS PES PTS == passed-in firstVideoPTS, and
+parametric **N=1, 2, 5, 9** (object_ids cover 0..2N−1). `rewrite-video-pes-dts`
+(24) and toolkit `selftest` (15) unchanged and green. No real regression was hidden
+by the old assertions — every change was the test catching up to the correct pattern.
+
+**Autoplay-default path untouched:** `buildMenuDisplaySet`/`buildIGDisplaySet`/
+`PALETTE` are only reached under `if (useIGMenu && menusEnabled)` (src/main.js).
+"Menus (Beta) off" builds the v1.11.0 autoplay disc with none of this code on the
+path — byte-identical to v1.11.0.
+
+### Production test disc — VLC verified at parity with S11
+`tools/build_prod_test.js` drives the **production** encoder + patch chain (zero
+ig-toolkit hand-build code for the IG) on a navy clip, assembled into the same
+single-menu Toast tree as S11 → `~/Desktop/menu-tests/prod_v1.12.0_test.iso`.
+Pre-flight re-extract: `displaySets=1, ODS objIds=[0,1,2,3], wds=false, btn1
+N0/S1/A1, btn2 N2/S3/A3, defSel=1, ICS PTS=54000000=in_time, segRT=true`. The
+production IG is byte-for-byte the same size as S11's (5076 B).
+
+**VLC result (fullscreen capture `/tmp/vlc_test/prod_v1120.png`, viewed + sampled):**
+both buttons render, distinct, no `graphics_processor` errors —
+- btn1 (560,435) SELECTED (defSel=1) → RGB (0,37,121) = idx 3 dark blue ✔
+- btn2 (560,555) NORMAL → RGB (201,100,0) = idx 2 orange ✔
+Matches the expected result exactly (production keeps its own orange/blue palette,
+so hues differ from S11's lavender/blue, but the structure/behaviour is identical).
+
+**Text labels:** this machine's homebrew ffmpeg has **no `drawtext` filter (no
+libfreetype)**, so `renderButtonBitmap` took its documented fallback to solid
+fill + border (verified: bitmap histogram = border idx1 + fill idx2, no interior
+text) — exactly S11's look. The drawtext text path is unchanged and renders the
+label on any freetype-enabled ffmpeg.
+
+### Verdict
+The production encoder is at parity with the hand-built winning configuration.
+v1.12.0 menu pipeline is ready for hardware burn. `prod_v1.12.0_test.iso` is the
+production candidate; S8/S9/S10/S11 remain as the A/B/C/normal-state diagnostics.

@@ -561,7 +561,7 @@ console.log('\n=== 9: ICS PES DTS required (v1.10.10 fix) ===');
     assertEq(pesPtsDtsList[1].hdrLen, 5,    'PDS PES hdr_len = 5 (PTS only)');
   }
 
-  // ICS DTS should be pts - 11664 (clamped to 0)
+  // ICS DTS should be pts - 12012 (clamped to 0) — Toast's measured PTS−DTS lead.
   // Verify by decoding the DTS field from the ICS PES
   let off2 = 0;
   while (off2 + 188 <= seg1px.length) {
@@ -575,7 +575,7 @@ console.log('\n=== 9: ICS PES DTS required (v1.10.10 fix) ===');
     if (pes[7] !== 0xC0) { off2 += 188; continue; }  // want PTS+DTS PES
     const d = pes.slice(14, 19);
     const dtsDecoded = ((d[0] & 0x0e) << 29) | (d[1] << 22) | ((d[2] & 0xfe) << 14) | (d[3] << 7) | ((d[4] & 0xfe) >> 1);
-    assertEq(dtsDecoded, 54000000 - 11664, 'ICS DTS = PTS - 11664 (130ms buffering window)');
+    assertEq(dtsDecoded, 54000000 - 12012, 'ICS DTS = PTS - 12012 (Toast measured lead)');
     break;
     off2 += 188;
   }
@@ -600,7 +600,7 @@ console.log('\n=== 9: ICS PES DTS required (v1.10.10 fix) ===');
     if (pes[7] !== 0xC0) { off3 += 188; continue; }
     const d = pes.slice(14, 19);
     const dtsDecoded = ((d[0] & 0x0e) << 29) | (d[1] << 22) | ((d[2] & 0xfe) << 14) | (d[3] << 7) | ((d[4] & 0xfe) >> 1);
-    assertEq(dtsDecoded, 0, 'ICS DTS clamped to 0 when PTS < 11664');
+    assertEq(dtsDecoded, 0, 'ICS DTS clamped to 0 when PTS < 12012');
     break;
     off3 += 188;
   }
@@ -861,7 +861,7 @@ console.log('\n=== 14: ODS DTS decode pipeline + END timing (v1.10.15 hardware t
   //     END.PTS = last ODS PTS (not ICS PTS as in v1.10.14)
   //   Previous assertion "END.PTS = ics_pts" was WRONG — now replaced.
   const ICS_PTS = 54000000;
-  const ICS_DTS = ICS_PTS - 11664;  // 53988336
+  const ICS_DTS = ICS_PTS - 12012;  // 53987988 (Toast measured PTS−DTS lead)
 
   // Constant decode_time=3 per ODS (v1.10.16: replaces ceil(w*h/90) to stay within LG tolerance).
   // Chain: ODS[0] DTS=ICS_DTS, PTS=ICS_DTS+3; ODS[1] DTS=ICS_DTS+3, PTS=ICS_DTS+6
@@ -1011,7 +1011,7 @@ console.log('\n=== 15: ODS decode_time = 3 (constant) — v1.10.16 LG tolerance 
 
   // 6-ODS scenario (our actual button count): total overshoot = 18 ticks < Toast max 41
   const ICS_PTS = 54000000;
-  const ICS_DTS = ICS_PTS - 11664;
+  const ICS_DTS = ICS_PTS - 12012;
   const ds6 = buildIGDisplaySet({
     composition: {
       videoWidth: 1920, videoHeight: 1080, frameRate: 0x40,
@@ -1055,16 +1055,50 @@ console.log('\n=== 15: ODS decode_time = 3 (constant) — v1.10.16 LG tolerance 
   assertEq(endSeg6.pts, ICS_DTS + 18, 'END.PTS = ICS_DTS+18 for 6 ODS (v1.10.16, inside Toast max 41)');
 }
 
-console.log('\n=== 16: buildMenuDisplaySet button state model (v1.10.19) ===');
+console.log('\n=== 16: buildMenuDisplaySet production pattern (v1.12.0 — S11 visible normal-state) ===');
 {
-  // Button IDs are still 1-based per BD spec ([1, 0xEFFF]; 0 reserved) — v1.10.17 fix retained.
-  // v1.10.19 isolation change (the only delta from v1.10.17): the button STATE MODEL.
-  //   - normal_state object_id_ref = 0xFFFF  (invisible until selected)
-  //   - selected_state object_id_ref = i     (the one bitmap per button)
-  //   - activated_state object_id_ref = selected_state  (shares the bitmap)
-  //   - page.defaultSelectedButtonIdRef = 0xFFFF  (no default selection)
-  //   - ODS count = button count  (was 3× button count)
-  const { buildMenuDisplaySet } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+  // Button IDs are 1-based per BD spec ([1, 0xEFFF]; 0 reserved).
+  // v1.12.0 production pattern (the S11 winning configuration, proven in VLC):
+  //   - every button has a VISIBLE normal-state object → 2 ODS per button
+  //   - normal_state object_id_ref   = 2i
+  //   - selected_state object_id_ref = 2i+1
+  //   - activated_state object_id_ref = selected_state  (shares the highlight bitmap)
+  //   - page.defaultSelectedButtonIdRef = 1  (first button starts highlighted)
+  //   - ODS count = 2× button count
+  //   - NO WDS (IG render path ignores it; matches Toast/S11)
+  //   - all 4 palette entries opaque (T=255); ICS PES PTS = passed-in firstVideoPTS
+  const { buildMenuDisplaySet, PALETTE } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+
+  // Decode the ICS PES PTS and the PDS palette T (alpha) bytes from a built buffer.
+  function firstIcsPtsAndPaletteT(m2tsBuffer) {
+    const IG_PID = 0x1400;
+    let icsPts = null; let paletteT = null;
+    let i = 0;
+    while (i + 188 <= m2tsBuffer.length) {
+      if (m2tsBuffer[i] !== 0x47) { i++; continue; }
+      const pid = ((m2tsBuffer[i + 1] & 0x1F) << 8) | m2tsBuffer[i + 2];
+      const pusi = (m2tsBuffer[i + 1] & 0x40) !== 0;
+      if (pid !== IG_PID || !pusi) { i += 188; continue; }
+      const ha = (m2tsBuffer[i + 3] & 0x20) !== 0;
+      const ps = ha ? (4 + 1 + m2tsBuffer[i + 4]) : 4;
+      const pes = m2tsBuffer.slice(i + ps, i + 188);
+      if (pes[0] !== 0 || pes[1] !== 0 || pes[2] !== 1) { i += 188; continue; }
+      const segType = pes[9 + pes[8]];
+      const ptsV = (pes[7] & 0x80)
+        ? (((pes[9] & 0x0E) << 29) | (pes[10] << 22) | ((pes[11] & 0xFE) << 14) | (pes[12] << 7) | ((pes[13] & 0xFE) >> 1))
+        : null;
+      if (segType === 0x18 && icsPts === null) icsPts = ptsV;
+      if (segType === 0x14 && paletteT === null) {
+        const seg = pes.slice(9 + pes[8]);
+        const segLen = (seg[1] << 8) | seg[2];
+        const body = seg.slice(3, 3 + segLen);  // [0]=palId [1]=ver then 5-byte entries
+        paletteT = [];
+        for (let o = 2; o + 4 < body.length; o += 5) paletteT.push(body[o + 4]);
+      }
+      i += 188;
+    }
+    return { icsPts, paletteT };
+  }
 
   function parseICSButtonIds(m2tsBuffer) {
     // Extract button_id values from the ICS segment in a .m2ts TS buffer.
@@ -1173,20 +1207,25 @@ console.log('\n=== 16: buildMenuDisplaySet button state model (v1.10.19) ===');
   const ds1 = buildMenuDisplaySet({ playlists: [1], pts: 54000000, labels: ['Episode 1'] });
   const r1 = parseICSButtonIds(ds1);
   const s1 = countSegments(ds1);
-  // Button IDs: 1-based (v1.10.17 fix retained)
-  assert(r1.buttonIds.every(id => id >= 1), '1-episode: all button_ids ≥ 1 (1-based retained)');
+  // Button IDs: 1-based
+  assert(r1.buttonIds.every(id => id >= 1), '1-episode: all button_ids ≥ 1 (1-based)');
   assert(!r1.buttonIds.includes(0), '1-episode: no button_id=0 present');
   assertEq(r1.buttonIds[0], 1, '1-episode: first button_id = 1');
-  // State model (v1.10.19)
-  assertEq(r1.defSelBtn, 0xFFFF, '1-episode: defaultSelectedButtonIdRef = 0xFFFF (no default selection)');
+  // v1.12.0 visible-normal state model
+  assertEq(r1.defSelBtn, 1, '1-episode: defaultSelectedButtonIdRef = 1 (first button selected)');
   assertEq(r1.defValidBtns[0], 1, '1-episode BOG0: defaultValidButtonIdRef = 1');
-  assertEq(r1.objRefs[0].normal, 0xFFFF, '1-episode: normal_state object_id_ref = 0xFFFF (invisible)');
-  assert(r1.objRefs[0].sel !== 0xFFFF, '1-episode: selected_state object_id_ref points to a real ODS');
-  assert(s1.odsIds.includes(r1.objRefs[0].sel), '1-episode: selected_state ref matches an emitted ODS object_id');
+  assertEq(r1.objRefs[0].normal, 0, '1-episode: normal_state object_id_ref = 0 (2·0, visible)');
+  assertEq(r1.objRefs[0].sel,    1, '1-episode: selected_state object_id_ref = 1 (2·0+1)');
+  assert(s1.odsIds.includes(r1.objRefs[0].normal), '1-episode: normal_state ref matches an emitted ODS');
+  assert(s1.odsIds.includes(r1.objRefs[0].sel),    '1-episode: selected_state ref matches an emitted ODS');
   assertEq(r1.objRefs[0].act, r1.objRefs[0].sel, '1-episode: activated_state object_id_ref == selected_state');
-  // ODS count == button count (was 3× button count pre-v1.10.19)
-  assertEq(s1.counts.ods, r1.buttonIds.length, '1-episode: ODS count == button count (not 3×)');
-  assertEq(s1.counts.ods, 1, '1-episode: exactly 1 ODS');
+  // ODS count == 2× button count (normal + selected per button)
+  assertEq(s1.counts.ods, 2 * r1.buttonIds.length, '1-episode: ODS count == 2× button count');
+  assertEq(s1.counts.ods, 2, '1-episode: exactly 2 ODS');
+  assertEq(s1.counts.ics, 1, '1-episode: exactly 1 ICS');
+  assertEq(s1.counts.pds, 1, '1-episode: exactly 1 PDS');
+  assertEq(s1.counts.end, 1, '1-episode: exactly 1 END');
+  assertEq(s1.counts.wds, 0, '1-episode: no WDS (matches Toast/S11)');
 
   // ── 2-episode (N=2) ──────────────────────────────────────────────────────────
   const ds2 = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['Episode 1', 'Episode 2'] });
@@ -1196,21 +1235,58 @@ console.log('\n=== 16: buildMenuDisplaySet button state model (v1.10.19) ===');
   assert(!r2.buttonIds.includes(0), '2-episode: no button_id=0 present');
   assertEq(r2.buttonIds[0], 1, '2-episode: button[0].id = 1');
   assertEq(r2.buttonIds[1], 2, '2-episode: button[1].id = 2');
-  assertEq(r2.defSelBtn, 0xFFFF, '2-episode: defaultSelectedButtonIdRef = 0xFFFF (no default selection)');
+  assertEq(r2.defSelBtn, 1, '2-episode: defaultSelectedButtonIdRef = 1 (first button selected)');
   assertEq(r2.defValidBtns[0], 1, '2-episode BOG0: defaultValidButtonIdRef = 1');
   assertEq(r2.defValidBtns[1], 2, '2-episode BOG1: defaultValidButtonIdRef = 2');
-  // Every button: normal invisible, selected real, activated == selected
+  // Every button: normal=2i (visible), selected=2i+1, activated == selected
   r2.objRefs.forEach((ref, i) => {
-    assertEq(ref.normal, 0xFFFF, `2-episode button[${i}]: normal_state object_id_ref = 0xFFFF`);
-    assert(ref.sel !== 0xFFFF, `2-episode button[${i}]: selected_state points to a real ODS`);
-    assert(s2.odsIds.includes(ref.sel), `2-episode button[${i}]: selected_state ref matches an emitted ODS`);
+    assertEq(ref.normal, 2 * i,     `2-episode button[${i}]: normal_state object_id_ref = ${2 * i}`);
+    assertEq(ref.sel,    2 * i + 1, `2-episode button[${i}]: selected_state object_id_ref = ${2 * i + 1}`);
+    assert(s2.odsIds.includes(ref.normal), `2-episode button[${i}]: normal_state ref matches an emitted ODS`);
+    assert(s2.odsIds.includes(ref.sel),    `2-episode button[${i}]: selected_state ref matches an emitted ODS`);
     assertEq(ref.act, ref.sel, `2-episode button[${i}]: activated_state == selected_state`);
   });
-  assertEq(s2.counts.ods, r2.buttonIds.length, '2-episode: ODS count == button count (not 3×)');
-  assertEq(s2.counts.ods, 2, '2-episode: exactly 2 ODS');
-  // Structural baseline retained from v1.10.17 (NOT reverted by v1.10.19): WDS present, single ICS.
-  assertEq(s2.counts.ics, 1, '2-episode: exactly 1 ICS (single display set retained)');
-  assertEq(s2.counts.wds, 1, '2-episode: WDS present (v1.10.17 baseline retained)');
+  assertEq(s2.counts.ods, 2 * r2.buttonIds.length, '2-episode: ODS count == 2× button count');
+  assertEq(s2.counts.ods, 4, '2-episode: exactly 4 ODS (2 buttons × normal+selected)');
+  // Single display set, no WDS (S11/Toast structure).
+  assertEq(s2.counts.ics, 1, '2-episode: exactly 1 ICS (single display set)');
+  assertEq(s2.counts.pds, 1, '2-episode: exactly 1 PDS');
+  assertEq(s2.counts.end, 1, '2-episode: exactly 1 END');
+  assertEq(s2.counts.wds, 0, '2-episode: no WDS');
+
+  // ── ICS PTS = passed-in firstVideoPTS, and palette fully opaque (Finding B/C) ──
+  const meta2 = firstIcsPtsAndPaletteT(ds2);
+  assertEq(meta2.icsPts, 54000000, '2-episode: ICS PES PTS == passed-in firstVideoPTS (54000000)');
+  assertEq(PALETTE.length, 4, 'PALETTE has 4 entries');
+  assert(PALETTE.every(e => e.T === 255), 'PALETTE: every entry opaque (T=255)');
+  assert(meta2.paletteT && meta2.paletteT.length === 4 && meta2.paletteT.every(t => t === 255),
+    '2-episode: emitted PDS — every palette entry T=255 (opaque)');
+
+  // ── Parametric N=5 and N=9 (must not break) ──────────────────────────────────
+  for (const N of [5, 9]) {
+    const pls = Array.from({ length: N }, (_, i) => i + 1);
+    const labs = pls.map(i => `Episode ${i}`);
+    const dsN = buildMenuDisplaySet({ playlists: pls, pts: 54000000, labels: labs });
+    const rN = parseICSButtonIds(dsN);
+    const sN = countSegments(dsN);
+    assertEq(rN.buttonIds.length, N, `${N}-episode: ${N} buttons`);
+    assertEq(rN.defSelBtn, 1, `${N}-episode: defaultSelectedButtonIdRef = 1`);
+    assertEq(sN.counts.ics, 1, `${N}-episode: exactly 1 ICS`);
+    assertEq(sN.counts.pds, 1, `${N}-episode: exactly 1 PDS`);
+    assertEq(sN.counts.end, 1, `${N}-episode: exactly 1 END`);
+    assertEq(sN.counts.wds, 0, `${N}-episode: no WDS`);
+    assertEq(sN.counts.ods, 2 * N, `${N}-episode: exactly ${2 * N} ODS (2 per button)`);
+    rN.objRefs.forEach((ref, i) => {
+      assertEq(ref.normal, 2 * i,     `${N}-episode button[${i}]: normal=${2 * i}`);
+      assertEq(ref.sel,    2 * i + 1, `${N}-episode button[${i}]: selected=${2 * i + 1}`);
+      assertEq(ref.act,    ref.sel,   `${N}-episode button[${i}]: activated==selected`);
+    });
+    // ODS object_ids cover 0..2N-1 exactly.
+    const sortedIds = sN.odsIds.slice().sort((a, b) => a - b);
+    const expectedIds = Array.from({ length: 2 * N }, (_, k) => k);
+    assert(JSON.stringify(sortedIds) === JSON.stringify(expectedIds),
+      `${N}-episode: ODS object_ids = 0..${2 * N - 1}`);
+  }
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
