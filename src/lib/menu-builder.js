@@ -904,8 +904,169 @@ function rewriteVideoPesDts(m2tsBuf, frameDuration = 3750) {
   return out;
 }
 
+// ── Menu background video generation (v1.13.0) ───────────────────────────────────
+// The menu clip is the video the IG is injected into. v1.12.0 proved a specific
+// H.264 profile (the navy-frame ffmpeg command) renders correctly on the LG BP350.
+// These params are LOCKED here so user-supplied backgrounds (solid or image) always
+// produce a stream with the same codec profile/level/pix_fmt and can never drift
+// into something the hardware rejects. Anything that wants to change the look does
+// so through the template's background config — never by changing the encoder args.
+const MENU_VIDEO = { width: 1920, height: 1080, fps: 24 };
+
+// Locked H.264/AC-3 encode args — byte-for-byte the v1.12.0 navy-frame command.
+// (Verified: profile High, level 4.0, yuv420p, 2 B-frames; GOP 24.)
+const MENU_ENCODE_ARGS = [
+  '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+  '-preset', 'medium', '-crf', '28',
+  '-bf', '2', '-g', '24',
+  '-c:a', 'ac3', '-b:a', '192k',
+];
+
+const MAX_IMAGE_DIM = 7680;  // reject anything larger than 8K on either axis
+const ANIMATED_CODECS = new Set(['gif', 'apng', 'webp', 'mng', 'flv1']);
+
+/**
+ * Validate a user-supplied background image before it is encoded into a menu
+ * clip. Uses ffprobe to read the first video stream. Throws on:
+ *   - missing / unreadable file
+ *   - no decodable video stream
+ *   - dimensions larger than 8K on either axis
+ *   - animated formats (multi-frame: gif / apng / animated webp …)
+ *
+ * @param {string} imagePath
+ * @param {string} ffprobePath - path to ffprobe binary
+ * @returns {{width:number,height:number,codec:string}}
+ */
+function validateBackgroundImage(imagePath, ffprobePath) {
+  if (!imagePath || !fs.existsSync(imagePath)) {
+    throw new Error(`background image not found: ${imagePath}`);
+  }
+  if (!ffprobePath || !fs.existsSync(ffprobePath)) {
+    throw new Error(`validateBackgroundImage: ffprobe not available at ${ffprobePath}`);
+  }
+  let info;
+  try {
+    const out = execFileSync(ffprobePath, [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,codec_name,nb_frames',
+      '-of', 'json', imagePath,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    info = JSON.parse(out.toString());
+  } catch (e) {
+    throw new Error(`background image is not a readable image: ${imagePath} (${e.message})`);
+  }
+  const s = info && info.streams && info.streams[0];
+  if (!s || !s.width || !s.height) {
+    throw new Error(`background image has no decodable video stream: ${imagePath}`);
+  }
+  if (s.width > MAX_IMAGE_DIM || s.height > MAX_IMAGE_DIM) {
+    throw new Error(`background image too large (${s.width}x${s.height}); max ${MAX_IMAGE_DIM}px on either axis`);
+  }
+  const nbFrames = parseInt(s.nb_frames, 10);
+  if (ANIMATED_CODECS.has(s.codec_name) || (Number.isFinite(nbFrames) && nbFrames > 1)) {
+    throw new Error(`animated images are not supported as menu backgrounds (codec=${s.codec_name}, frames=${s.nb_frames})`);
+  }
+  return { width: s.width, height: s.height, codec: s.codec_name };
+}
+
+/**
+ * Build the ffmpeg scale expression for a given fit mode, targeting 1920×1080.
+ *   cover   — fill the frame, crop the overflow (default; no letterbox)
+ *   contain — fit inside the frame, letterbox the remainder (bg color)
+ *   stretch — scale to exactly 1920×1080, distorting aspect ratio
+ */
+function _fitScaleExpr(fit, w, h) {
+  switch (fit) {
+    case 'contain':
+      return `scale=${w}:${h}:force_original_aspect_ratio=decrease`;
+    case 'stretch':
+      return `scale=${w}:${h},setsar=1`;
+    case 'cover':
+    default:
+      return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
+  }
+}
+
+/**
+ * Generate the menu background clip (the video the IG is later injected into).
+ *
+ * Solid backgrounds reproduce the v1.12.0 navy-frame logic with the template's
+ * color. Image backgrounds load the user image, scale+pad it per the template's
+ * fit mode, flatten any alpha against the template's background color, and encode
+ * with the SAME locked H.264 params. Either way the output is a 1920×1080 H.264
+ * clip with the proven codec profile, plus a silent AC-3 track.
+ *
+ * @param {object} opts
+ * @param {object} opts.template    - validated template (background drives this)
+ * @param {string} opts.ffmpegPath  - ffmpeg binary
+ * @param {string} opts.ffprobePath - ffprobe binary (required to validate images)
+ * @param {string} opts.outputPath  - output clip path (.mkv recommended)
+ * @param {number} [opts.duration]  - clip duration in seconds (default 5)
+ * @returns {string} outputPath
+ */
+function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, duration = 5 } = {}) {
+  if (!template || !template.background) throw new Error('generateMenuVideo: template with a background is required');
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) throw new Error(`generateMenuVideo: ffmpeg not available at ${ffmpegPath}`);
+  if (!outputPath) throw new Error('generateMenuVideo: outputPath is required');
+
+  const bg = template.background;
+  const { width: W, height: H, fps } = MENU_VIDEO;
+  const anull = 'anullsrc=channel_layout=stereo:sample_rate=48000';
+
+  let args;
+  if (bg.type === 'image') {
+    if (!bg.imagePath) throw new Error('generateMenuVideo: background.type is "image" but background.imagePath is null');
+    validateBackgroundImage(bg.imagePath, ffprobePath);
+    // Composite the scaled image over a solid color plate. This flattens any
+    // alpha against background.color AND supplies the letterbox color for
+    // 'contain'. format=yuv420p drops the (now-flattened) alpha for encoding.
+    const scaleExpr = _fitScaleExpr(bg.fit, W, H);
+    // Final scale with out_range=tv normalizes full-range (JPEG → yuvj420p) sources
+    // to limited-range yuv420p, which BD-ROM requires; format=yuv420p drops the
+    // (already-flattened) alpha. Without it, JPEG inputs would emit yuvj420p.
+    const filter =
+      `color=c=0x${bg.color}:s=${W}x${H}[bgc];` +
+      `[0:v]${scaleExpr}[fg];` +
+      `[bgc][fg]overlay=(W-w)/2:(H-h)/2,scale=${W}:${H}:out_range=tv,format=yuv420p[v]`;
+    args = [
+      '-y',
+      '-loop', '1', '-i', bg.imagePath,
+      '-f', 'lavfi', '-i', anull,
+      '-filter_complex', filter,
+      '-map', '[v]', '-map', '1:a',
+      '-t', String(duration), '-r', String(fps),
+      ...MENU_ENCODE_ARGS,
+      outputPath,
+    ];
+  } else {
+    // Solid: the v1.12.0 navy-frame logic, parameterized on background.color.
+    args = [
+      '-y',
+      '-f', 'lavfi', '-i', `color=c=0x${bg.color}:size=${W}x${H}:rate=${fps}`,
+      '-f', 'lavfi', '-i', anull,
+      '-map', '0:v', '-map', '1:a',
+      '-t', String(duration),
+      ...MENU_ENCODE_ARGS,
+      outputPath,
+    ];
+  }
+
+  try {
+    execFileSync(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    const detail = (e.stderr || '').toString().slice(-600);
+    throw new Error(`generateMenuVideo: ffmpeg failed: ${detail || e.message}`);
+  }
+  if (!fs.existsSync(outputPath)) throw new Error(`generateMenuVideo: no output produced at ${outputPath}`);
+  return outputPath;
+}
+
 module.exports = {
   buildMenuDisplaySet,
+  generateMenuVideo,
+  validateBackgroundImage,
+  MENU_VIDEO,
+  MENU_ENCODE_ARGS,
   extractFirstVideoPTS,
   rewriteVideoPesDts,
   renderButtonBitmap,
