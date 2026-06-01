@@ -144,11 +144,28 @@ Other confirmed: ICS-first segment order required (orphans dropped);
 Toast); sparse PDS ok in SW (S4 tests HW); ICS PTS must be ≥ clip in_time or the
 seek filter wipes it (why encoder stamps IG PTS = first video PTS).
 
+## Phase 4 — S8 (our video) ✅ BUILT (2026-06-01)
+
+`tools/ig-toolkit/build_s8.js` → `~/Desktop/toast_S8.iso`. S8 = S7's IG on our
+**blank navy 0x1a1a2e** menu video (Toast's text-bearing video removed). Built by:
+ffmpeg navy still+silent AC3 → tsMuxeR clip → `rewriteVideoPesDts` →
+re-time the S7 IG (offset so earliest IG DTS aligns to firstVideoPTS=54000000,
+preserving the +12012 ICS lead and Toast's exact PES marker nibbles incl. 0x0
+DTS) → `injectIGIntoM2ts` + `patchPmtForIG` → CLPI/MPLS patched for IG + infinite
+still, renamed 01200 → full Toast tree → makehybrid UDF. Verified: UDF, navy
+frame, still_mode=0x01, IG re-extracts (DS0 Toast control 1-btn + DS1 our 2-btn),
+PLAY_PL(1/2)→00001/00002. Full notes in `docs/toast_mutation_plan.md` (S8 section).
+
+**S8 is the decisive test of the Phase-2 #1 hypothesis.** Predicted: renders in
+VLC (libbluray auto-selects DS1 btn0 → orange block) but blank on the LG (honours
+defSelBtn=0xFFFF). If S0–S7 render but S8 is blank ⇒ confirmed: our IG-borne
+button graphics + invisible normal-state need video-baked text (Toast's trick).
+
 ## Status / next
-Phases 1, 4 (S0–S7), 2 done. **User action: burn S0 (gate), then S1/S2.** Report
-per disc whether DS1 (mutated) and DS0 (control) show buttons. Then: build S8 if
-needed, and implement Phase 6 fixes (start with the visible-normal-state /
-defSelBtn change — the #1 candidate). S8 build recipe in toast_mutation_plan.md.
+Phases 1, 2, 4 (S0–**S8**) all done. **User action: burn S0 (gate) → S1/S2 → S8.**
+Report per disc whether DS1 (mutated) and DS0 (control) show buttons; for S8 note
+VLC vs LG. Then Phase 6 encoder fix — start with the #1 candidate: give buttons a
+**visible normal-state object** and/or a real `default_selected_button_id_ref`.
 Deep libbluray source analysis (`src/libbluray/decoders/*.c`, `hdmv/*.c`):
 every conditional that can suppress a button, lax spec interpretations,
 "player should do X but we don't" comments, the button selection state machine,
