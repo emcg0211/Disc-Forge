@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('discForge', {
   // Menu templates (v1.13.0). Renderer-side editor UI is Phase 4.
   templateList:      ()                 => ipcRenderer.invoke('template-list'),
   templateLoad:      (id)               => ipcRenderer.invoke('template-load', id),
+  templateValidate:  (template)         => ipcRenderer.invoke('template-validate', template),
   templateSave:      (template)         => ipcRenderer.invoke('template-save', template),
   templateDuplicate: (id, newName)      => ipcRenderer.invoke('template-duplicate', { id, newName }),
   templateDelete:    (id)               => ipcRenderer.invoke('template-delete', id),

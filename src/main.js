@@ -3563,6 +3563,13 @@ ipcMain.handle('template-load', async (_, id) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+ipcMain.handle('template-validate', async (_, template) => {
+  try {
+    require('./lib/template').validateTemplate(template);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle('template-save', async (_, template) => {
   try {
     const store = require('./lib/template-store');
