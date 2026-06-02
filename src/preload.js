@@ -1,6 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const color = require('./lib/color');
 
 contextBridge.exposeInMainWorld('discForge', {
+  // YCbCr-601 ↔ RGB (single source of truth in src/lib/color.js) for the
+  // template editor's palette pickers — the renderer never re-derives the math.
+  color: {
+    yuvToRgb: (Y, Cr, Cb) => color.yuvToRgb(Y, Cr, Cb),
+    rgbToYuv: (r, g, b)   => color.rgbToYuv(r, g, b),
+    rgbToHex: (rgb)       => color.rgbToHex(rgb),
+    hexToRgb: (hex)       => color.hexToRgb(hex),
+  },
   // Core
   getHomeDir:       ()        => ipcRenderer.invoke('get-home-dir'),
   checkTools:       ()        => ipcRenderer.invoke('check-tools'),

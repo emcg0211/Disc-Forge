@@ -1062,16 +1062,9 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
 }
 
 // ── Button preview rendering (v1.13.0 — for the template editor UI) ───────────────
-// YCbCr-601 (limited range) → RGB, matching the derivation used to author the
-// template fill colors.
-function _yuvToRgb(Y, Cr, Cb) {
-  const cl = v => Math.max(0, Math.min(255, Math.round(v)));
-  return [
-    cl(1.164 * (Y - 16) + 1.596 * (Cr - 128)),
-    cl(1.164 * (Y - 16) - 0.813 * (Cr - 128) - 0.391 * (Cb - 128)),
-    cl(1.164 * (Y - 16) + 2.018 * (Cb - 128)),
-  ];
-}
+// YCbCr-601 (limited range) → RGB via the shared color module (single source of
+// truth, also exposed to the renderer's palette pickers).
+const { yuvToRgb: _yuvToRgb } = require('./color');
 
 // Standard IEEE CRC-32 (reflected) — required for PNG chunk checksums. (Distinct
 // from mpegCrc32 above, which uses the MPEG-TS polynomial.)

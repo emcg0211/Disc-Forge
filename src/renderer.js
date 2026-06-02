@@ -43,7 +43,9 @@ const TABS = [
   { id:'chapters',  icon:'≡',  label:'Chapters'    },
   { id:'menu',      icon:'🎨', label:'Menu'        },
   { id:'extras',    icon:'🎞', label:'Extras'      },
+  { id:'templates', icon:'🖌', label:'Templates'   },
 ];
+const TAB_TEMPLATES = 7;  // index of the Templates tab in TABS
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -102,7 +104,20 @@ let state = {
       buttonLabels: [],
       buttonBgColor: '#2a2a4a', buttonTextColor: '#ffffff',
       buttonHighlightColor: '#ff8800', fontFamily: 'MenuFont',
+      templateId: 'classic',   // v1.13.0 — drives the menu look (see Templates tab)
     },
+  },
+  // ── v1.13.0 menu templates ────────────────────────────────────────────────
+  templates: { builtIn: [], user: [], loaded: false },
+  templateEditor: {
+    selectedId: 'classic',
+    draft: null,        // working copy (object) of the selected template
+    baseline: null,     // pristine copy for Revert / dirty detection
+    error: null,        // validateTemplate error surfaced inline
+    previews: {},       // { normal: dataURL, selected: dataURL } for selectedId
+    previewKey: null,   // hash of the draft the previews were rendered from
+    advancedPalette: false,
+    busy: false,
   },
   form: {
     audio:    { lang:LANGUAGES[0], fmt:AUDIO_FORMATS[0], label:'', isDefault:false, file:null },
@@ -161,6 +176,7 @@ async function boot() {
     // queryLocalFonts not available or permission denied - use defaults
     state.systemFonts = [];
   }
+  loadTemplates();  // v1.13.0 — populate the Templates tab + build-flow dropdown
   window.discForge.onBuildProgress(handleBuildProgress);
   window.discForge.onFFmpegProgress(line => {
     // CRF encode total-duration sentinel — don't display, just store
@@ -892,6 +908,148 @@ function menuPreviewHTML() {
     '</div></div>';
 }
 
+// ── v1.13.0 Menu Templates ──────────────────────────────────────────────────────
+async function loadTemplates() {
+  const r = await window.discForge.templateList();
+  if (!r || !r.ok) { appendLog('[Templates] list failed: ' + (r && r.error)); return; }
+  state.templates = { builtIn: r.builtIn || [], user: r.user || [], loaded: true };
+  const all = [...state.templates.builtIn, ...state.templates.user];
+  if (!all.find(t => t.id === state.templateEditor.selectedId)) {
+    state.templateEditor.selectedId = all[0] ? all[0].id : 'classic';
+  }
+  render();
+  selectTemplate(state.templateEditor.selectedId);
+}
+
+function templateMeta(id) {
+  return [...(state.templates.builtIn || []), ...(state.templates.user || [])].find(t => t.id === id) || null;
+}
+function isReadonly(id) { const m = templateMeta(id); return m ? m.readonly : true; }
+
+async function selectTemplate(id) {
+  const r = await window.discForge.templateLoad(id);
+  if (!r || !r.ok) { appendLog('[Templates] load failed: ' + (r && r.error)); return; }
+  const ed = state.templateEditor;
+  ed.selectedId = id;
+  ed.draft = r.template;
+  ed.baseline = JSON.parse(JSON.stringify(r.template));
+  ed.error = null;
+  ed.previews = {};
+  ed.previewKey = null;
+  render();
+}
+
+// Dropdown <option>s for the build flow + editor list.
+function templateOptionsHTML(selectedId) {
+  const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
+  if (all.length === 0) return `<option value="classic" selected>Classic</option>`;
+  return all.map(t =>
+    `<option value="${esc(t.id)}" ${t.id === selectedId ? 'selected' : ''}>${esc(t.name)}${t.readonly ? ' (built-in)' : ''}</option>`
+  ).join('');
+}
+
+function _paletteHex(entry) {
+  const rgb = window.discForge.color.yuvToRgb(entry.Y, entry.Cr, entry.Cb);
+  return '#' + window.discForge.color.rgbToHex(rgb);
+}
+function _entryRoles(tpl, id) {
+  const roles = [];
+  if (tpl.button.normalFill.entry === id)   roles.push('Normal fill');
+  if (tpl.button.selectedFill.entry === id) roles.push('Selected fill');
+  if (tpl.button.borderEntry === id)        roles.push('Border / text');
+  if (roles.length === 0) roles.push('Background');
+  return roles.join(', ');
+}
+
+// Phase 4A: read-only field display of the selected template.
+function templateDetailHTML(tpl, ro) {
+  const bg = tpl.background;
+  const paletteRows = tpl.palette.map(e => `
+    <div class="tpl-pal-row">
+      <span class="tpl-swatch" style="background:${_paletteHex(e)}"></span>
+      <span class="tpl-pal-idx">#${e.id}</span>
+      <span class="tpl-pal-role">${esc(_entryRoles(tpl, e.id))}</span>
+      <span class="tpl-pal-val">${_paletteHex(e)} · Y${e.Y} Cr${e.Cr} Cb${e.Cb}</span>
+    </div>`).join('');
+
+  return `
+    <div class="tpl-detail-head">
+      <div>
+        <div class="tpl-detail-name">${esc(tpl.name)}</div>
+        <div class="tpl-detail-desc">${esc(tpl.description || '')}</div>
+      </div>
+      <span class="badge ${ro ? 'badge-blue' : 'badge-green'}">${ro ? 'Built-in · read-only' : 'Custom'}</span>
+    </div>
+
+    <div class="field"><label class="field-label">Name</label>
+      <input type="text" value="${esc(tpl.name)}" disabled></div>
+
+    <div class="field"><label class="field-label">Palette</label>
+      <div class="tpl-pal-list">${paletteRows}</div></div>
+
+    <div class="field"><label class="field-label">Button geometry</label>
+      <div class="tpl-kv">
+        <span>Width <b>${tpl.button.width}</b></span>
+        <span>Height <b>${tpl.button.height}</b></span>
+        <span>Gap <b>${tpl.button.gap}</b></span>
+        <span>Border <b>${tpl.button.border}</b></span>
+      </div></div>
+
+    <div class="field"><label class="field-label">Font</label>
+      <div class="tpl-kv">
+        <span>File <b>${esc(tpl.font.file)}</b></span>
+        <span>Size ratio <b>${tpl.font.sizeRatio}</b></span>
+        <span>Color <b>${esc(tpl.font.color)}</b></span>
+      </div></div>
+
+    <div class="field"><label class="field-label">Background</label>
+      <div class="tpl-kv">
+        <span>Type <b>${esc(bg.type)}</b></span>
+        ${bg.type === 'solid'
+          ? `<span>Color <b>#${esc(bg.color)}</b></span><span class="tpl-swatch" style="background:#${esc(bg.color)}"></span>`
+          : `<span>Fit <b>${esc(bg.fit)}</b></span><span>Image <b>${bg.imagePath ? esc(bg.imagePath.split('/').pop()) : '(none — set per disc)'}</b></span>`}
+      </div></div>
+
+    <div class="tpl-detail-note">The full editor (color pickers, geometry, preview) arrives below for custom templates. Built-in templates are read-only — use “Duplicate to edit”.</div>
+  `;
+}
+
+function pageTemplates() {
+  const ed = state.templateEditor;
+  const t  = state.templates;
+
+  const row = (m) => `
+    <div class="tpl-list-item ${m.id === ed.selectedId ? 'active' : ''}" data-tpl-id="${esc(m.id)}">
+      <span class="tpl-list-name">${esc(m.name)}</span>
+      <span class="badge ${m.readonly ? 'badge-blue' : 'badge-green'}">${m.readonly ? 'Built-in' : 'Custom'}</span>
+    </div>`;
+
+  let listHTML = '';
+  if (!t.loaded) {
+    listHTML = `<div class="tpl-list-empty">Loading…</div>`;
+  } else {
+    listHTML += `<div class="tpl-list-group">Built-in</div>` + t.builtIn.map(row).join('');
+    listHTML += `<div class="tpl-list-group">Custom</div>`;
+    listHTML += t.user.length ? t.user.map(row).join('') : `<div class="tpl-list-empty">No custom templates yet</div>`;
+  }
+
+  const tpl = ed.draft;
+  const ro  = isReadonly(ed.selectedId);
+  const detail = tpl
+    ? templateDetailHTML(tpl, ro)
+    : `<div class="empty-state"><div class="empty-state-icon">🖌</div><div class="empty-state-text">Select a template to view it</div></div>`;
+
+  return `
+    <div class="page-header"><div class="page-header-left">
+      <div class="page-title">Menu Templates</div>
+      <div class="page-subtitle">Customize the look of interactive disc menus. Built-in templates are read-only — duplicate one to edit.</div>
+    </div></div>
+    <div class="tpl-layout">
+      <div class="tpl-list card">${listHTML}</div>
+      <div class="tpl-editor card">${detail}</div>
+    </div>`;
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────
 function render() {
   document.body.classList.toggle('light-mode', state.lightMode);
@@ -927,6 +1085,7 @@ function buildHTML() {
           ${tab===4 ? pageChapters(p, state.form.chapter) : ''}
           ${tab===5 && state.menusEnabled ? pageMenu(p) : ''}
           ${tab===6 ? pageExtras(p, state.form.extras) : ''}
+          ${tab===7 ? pageTemplates() : ''}
         </div>
       </div>
     </div>
@@ -1086,7 +1245,7 @@ function sidebarHTML(p, canBuild) {
 
 // ── Tab Bar ────────────────────────────────────────────────────────────────────
 function tabbarHTML(p, activeTab) {
-  const counts = [0, 0, p.audioTracks.length, p.subtitleTracks.length, p.chapters.length, 0, p.extras.length];
+  const counts = [0, 0, p.audioTracks.length, p.subtitleTracks.length, p.chapters.length, 0, p.extras.length, 0];
   return `<div class="tabbar">
     ${TABS.map((t,i)=>`
       <button class="tab-btn ${i===activeTab?'active':''}" data-tab="${i}"${i===5&&!state.menusEnabled?' style="display:none"':''}>
@@ -1169,6 +1328,14 @@ function pageProject(p) {
               <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Title</label>
               <input type="text" id="ig-menu-title" value="${esc(p.igMenuConfig?.title||'')}" placeholder="Menu title (optional)" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
             </div>
+            <div style="display:flex;gap:10px;align-items:center">
+              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Template</label>
+              <select id="ig-template" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
+                ${templateOptionsHTML(p.igMenuConfig?.templateId || 'classic')}
+              </select>
+              <button class="btn btn-ghost btn-xs" id="ig-edit-templates" title="Open the template editor">Edit…</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-tertiary);margin:-2px 0 2px 62px">The template controls the menu palette, button geometry, font, and background.</div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Background</label>
               <input type="color" id="ig-bg-color" value="${p.igMenuConfig?.bgColor||'#1a1a2e'}" style="width:36px;height:24px;cursor:pointer;border:none;border-radius:4px;padding:1px;background:none">
@@ -2398,6 +2565,15 @@ function attachListeners() {
       setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonLabels: labels } });
     });
   });
+  // Menu template dropdown (build flow) → igMenuConfig.templateId
+  document.getElementById('ig-template')?.addEventListener('change', e =>
+    setPrj({ igMenuConfig: { ...state.project.igMenuConfig, templateId: e.target.value } }));
+  document.getElementById('ig-edit-templates')?.addEventListener('click', () =>
+    setState({ tab: TAB_TEMPLATES }));
+
+  // Templates tab — list selection
+  document.querySelectorAll('.tpl-list-item').forEach(el =>
+    el.addEventListener('click', () => selectTemplate(el.dataset.tplId)));
   document.getElementById('splash-duration')?.addEventListener('change', e => setPrj({ splashDuration: parseInt(e.target.value, 10) }));
   document.getElementById('splash-color')?.addEventListener('input',   e => setPrj({ splashColor: e.target.value.slice(1) }));
   document.getElementById('pick-splash-png')?.addEventListener('click', async () => {
