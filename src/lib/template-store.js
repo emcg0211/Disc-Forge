@@ -131,6 +131,33 @@ function saveUser(template) {
 }
 
 /**
+ * "Save As": save the given template (e.g. an edited draft) under a NEW name,
+ * enforcing uniqueness against the whole catalog (built-in + user) by both
+ * slugified id and case-insensitive display name. Unlike saveUser (which
+ * overwrites by id) this refuses to clobber an existing template. Returns the
+ * new id.
+ */
+function saveAsUser(template, newName) {
+  if (!template || typeof template !== 'object') throw new Error('saveAsUser: template object required');
+  const name = String(newName || '').trim();
+  if (!name) throw new Error('saveAsUser: a name is required');
+  const id = slugify(name);
+  if (isBuiltInId(id)) throw new Error(`'${name}' collides with a built-in template`);
+  const existing = [...listBuiltIn(), ...listUser()];
+  if (existing.some(t => t.id === id)) throw new Error(`a template with id '${id}' already exists`);
+  if (existing.some(t => (t.name || '').toLowerCase() === name.toLowerCase())) {
+    throw new Error(`a template named '${name}' already exists`);
+  }
+  const obj = JSON.parse(JSON.stringify(template));
+  obj.id = id;
+  obj.name = name;
+  validateTemplate(obj);
+  ensureUserDir();
+  fs.writeFileSync(userPath(id), JSON.stringify(obj, null, 2) + '\n', 'utf8');
+  return id;
+}
+
+/**
  * Duplicate a template (built-in or user) into the user dir under newName.
  * The new id is slugified from newName and made unique against the existing
  * catalog. Returns the new id.
@@ -172,6 +199,7 @@ module.exports = {
   isBuiltInId,
   loadById,
   saveUser,
+  saveAsUser,
   duplicate,
   deleteUser,
   slugify,

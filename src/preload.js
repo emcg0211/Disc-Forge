@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('discForge', {
   templateLoad:      (id)               => ipcRenderer.invoke('template-load', id),
   templateValidate:  (template)         => ipcRenderer.invoke('template-validate', template),
   templateSave:      (template)         => ipcRenderer.invoke('template-save', template),
+  templateSaveAs:    (template, newName)=> ipcRenderer.invoke('template-save-as', { template, newName }),
   templateDuplicate: (id, newName)      => ipcRenderer.invoke('template-duplicate', { id, newName }),
   templateDelete:    (id)               => ipcRenderer.invoke('template-delete', id),
   templatePreviewButton: (opts)         => ipcRenderer.invoke('template-preview-button', opts),

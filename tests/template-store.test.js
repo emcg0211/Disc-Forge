@@ -141,6 +141,50 @@ console.log('\n=== 7: renderButtonPreviewPng ===');
   rejects(() => renderButtonPreviewPng({ template: null }), 'preview: null template throws');
 }
 
+// ── 8: saveAsUser (name uniqueness) ──────────────────────────────────────────────
+console.log('\n=== 8: saveAsUser (Save As name uniqueness) ===');
+{
+  const draft = loadTemplate('classic');
+  draft.button.normalFill = { entry: 2, rgb: [9, 9, 9], hex: '090909' };
+
+  const id = store.saveAsUser(draft, 'My Saved As');
+  assertEq(id, 'my-saved-as', 'saveAsUser returns slugified id');
+  assertEq(store.loadById('my-saved-as').name, 'My Saved As', 'saveAsUser sets new name');
+  assertEq(store.loadById('my-saved-as').button.normalFill.hex, '090909', 'saveAsUser persists the draft edits');
+
+  // collides with a built-in name/id
+  rejects(() => store.saveAsUser(draft, 'Classic'), 'Save As over built-in name');
+  rejects(() => store.saveAsUser(draft, 'classic'), 'Save As over built-in id slug');
+  // collides with the just-created user template (by name and by id slug)
+  rejects(() => store.saveAsUser(draft, 'My Saved As'), 'Save As duplicate user name');
+  rejects(() => store.saveAsUser(draft, 'my saved as'), 'Save As duplicate (case-insensitive)');
+  // empty name
+  rejects(() => store.saveAsUser(draft, '   '), 'Save As empty name');
+
+  // a genuinely new unique name succeeds
+  assertEq(store.saveAsUser(draft, 'Another One'), 'another-one', 'Save As unique name succeeds');
+}
+
+// ── 9: full persistence round-trip (duplicate → edit → save → re-read) ────────────
+console.log('\n=== 9: persistence round-trip ===');
+{
+  // duplicate a built-in
+  const dupId = store.duplicate('classic', 'Round Trip');
+  // edit the working copy's palette (as the editor would) and save by id
+  const draft = store.loadById(dupId);
+  draft.palette[2].Y = 99;
+  draft.button.normalFill = { entry: 2, rgb: [1, 2, 3], hex: '010203' };
+  store.saveUser(draft);
+  // simulate app restart: a fresh store instance re-reading from disk
+  delete require.cache[require.resolve(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'))];
+  const store2 = require(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'));
+  store2.setUserTemplatesDir(WORK);
+  const reloaded = store2.loadById(dupId);
+  assertEq(reloaded.palette[2].Y, 99, 'round-trip: palette edit persisted across reload');
+  assertEq(reloaded.button.normalFill.hex, '010203', 'round-trip: fill edit persisted across reload');
+  assert(store2.listUser().some(t => t.id === dupId), 'round-trip: appears in listUser after reload');
+}
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

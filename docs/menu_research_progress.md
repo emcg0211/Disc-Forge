@@ -517,12 +517,36 @@ segRT=true` and render both buttons distinctly in VLC with the expected look;
 theatrical confirms the **image-background** path end-to-end (visible gradient
 plate behind gold buttons). Burn scripts: `/tmp/vlc_test/burn_template_*.sh`.
 
+### Phase 4 — renderer UI (SHIPPED)
+The template editor UI is now in the app (`src/renderer.js`, vanilla DOM matching
+the existing patterns; styles in `src/styles.css`).
+- **Reachable screen:** a dedicated **Templates** tab in the main tabbar (always
+  visible). Two-pane layout: left = template list (built-in vs custom badges),
+  right = editor.
+- **Editor:** built-in templates are read-only (field display + live preview +
+  "Duplicate to edit"); user templates are fully editable — Name; Palette (native
+  color pickers per entry + an "Edit YCbCr" toggle, role labels derived from
+  `button.*Entry`/`borderEntry`); Geometry (width/height/gap/border); Font (size-
+  ratio slider + color; `MenuFont.ttf` only); Background (solid|image → color, or
+  image picker + fit + flatten/letterbox color). A **live preview** (Normal +
+  Selected button PNGs via `template-preview-button`, debounced 200 ms) re-renders
+  on every edit; edits are validated first (`template-validate`) and the pane
+  shows an inline error banner instead of rendering on failure.
+- **Persistence toolbar:** Save / Save As… / Delete / Revert over the Phase-3 IPC
+  (plus the Phase-4 `template-save-as`, which enforces name uniqueness across the
+  built-in + user catalog). Delete uses a native confirm; Save re-reads from disk.
+  Duplicate / Save As collect the name via an in-app modal (Electron has no
+  `window.prompt`).
+- **Build-flow wiring:** the **Project** tab's interactive-menu config has a
+  **Template** dropdown (catalog-populated, default `classic`) bound to
+  `igMenuConfig.templateId`, which flows to `addMenuToDisc`; absent/Classic stays
+  byte-identical to v1.12.0.
+- **Color math:** centralized in `src/lib/color.js` (YCbCr↔RGB), reused by the
+  preview renderer and exposed to the UI via `window.discForge.color.*`.
+- **CSP:** `index.html` gained `img-src 'self' data:` so the data-URI button
+  previews load.
+
 ### NOT in v1.13.0 (explicitly deferred)
-- **Renderer-side template editor UI** — Phase 4, its own session. v1.13.0 ships
-  the data model, image pipeline, and the IPC layer only (`template-list/-load/
-  -save/-duplicate/-delete/-preview-button` in `src/main.js`, exposed via
-  `src/preload.js`; `renderButtonPreviewPng()` returns a PNG of one rendered
-  button for the future preview pane).
 - **Custom fonts** beyond the bundled `MenuFont.ttf` (template `font.file`
-  resolves within `assets/fonts`; arbitrary user fonts are out of scope).
+  resolves within `assets/fonts`; a font-file picker is deferred to v1.14).
 - **Animated / video backgrounds** — still images and solid colors only.

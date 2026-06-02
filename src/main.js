@@ -3577,6 +3577,13 @@ ipcMain.handle('template-save', async (_, template) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+ipcMain.handle('template-save-as', async (_, { template, newName }) => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, id: store.saveAsUser(template, newName) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle('template-duplicate', async (_, { id, newName }) => {
   try {
     const store = require('./lib/template-store');

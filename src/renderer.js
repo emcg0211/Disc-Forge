@@ -118,7 +118,7 @@ let state = {
     previewKey: null,   // hash of the draft the previews were rendered from
     advancedPalette: false,
     busy: false,
-    dupName: null,      // when non-null, the duplicate-name modal is open (Electron lacks window.prompt)
+    nameModal: null,    // {mode:'duplicate'|'saveAs', value} — name-entry modal (Electron lacks window.prompt)
   },
   form: {
     audio:    { lang:LANGUAGES[0], fmt:AUDIO_FORMATS[0], label:'', isDefault:false, file:null },
@@ -1004,35 +1004,77 @@ function isDirty() {
   return !!(ed.draft && ed.baseline && JSON.stringify(ed.draft) !== JSON.stringify(ed.baseline));
 }
 
-// Duplicate the selected (built-in or user) template into an editable copy.
-// Electron has no window.prompt, so the new name is collected via an in-app modal.
-function duplicateSelected() {
+// Name-entry modal, shared by Duplicate and Save As (Electron has no window.prompt).
+// state.templateEditor.nameModal = { mode:'duplicate'|'saveAs', value }
+function openNameModal(mode) {
   const meta = templateMeta(state.templateEditor.selectedId);
-  state.templateEditor.dupName = (meta ? meta.name : 'Template') + ' copy';
+  const base = (state.templateEditor.draft && state.templateEditor.draft.name) || (meta && meta.name) || 'Template';
+  state.templateEditor.nameModal = { mode, value: base + ' copy' };
   render();
 }
-function cancelDuplicate() { state.templateEditor.dupName = null; render(); }
-async function confirmDuplicate() {
-  const input = document.getElementById('tpl-dup-name');
+function duplicateSelected() { openNameModal('duplicate'); }
+function cancelNameModal() { state.templateEditor.nameModal = null; render(); }
+async function confirmNameModal() {
+  const nm = state.templateEditor.nameModal;
+  if (!nm) return;
+  const input = document.getElementById('tpl-name-modal-input');
   const name = (input && input.value.trim()) || 'Template copy';
-  const srcId = state.templateEditor.selectedId;
-  state.templateEditor.dupName = null;
-  const r = await window.discForge.templateDuplicate(srcId, name);
-  if (!r || !r.ok) { window.alert('Could not duplicate: ' + (r && r.error)); render(); return; }
+  state.templateEditor.nameModal = null;
+  let r;
+  if (nm.mode === 'duplicate') {
+    // Copies the on-disk source template.
+    r = await window.discForge.templateDuplicate(state.templateEditor.selectedId, name);
+  } else {
+    // Save As: persists the current (edited) draft under a new, unique name.
+    r = await window.discForge.templateSaveAs(state.templateEditor.draft, name);
+  }
+  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); render(); return; }
   await loadTemplates();
   await selectTemplate(r.id);
 }
 
-function dupModalHTML() {
+function nameModalHTML() {
+  const nm = state.templateEditor.nameModal;
+  const isDup = nm.mode === 'duplicate';
   return `<div class="modal-backdrop"><div class="modal-box" style="max-width:420px;text-align:left">
-    <div class="modal-title">Duplicate template</div>
-    <div class="modal-sub">Create an editable copy under a new name.</div>
-    <input type="text" id="tpl-dup-name" value="${esc(state.templateEditor.dupName || '')}" placeholder="Template name" style="width:100%;margin:14px 0">
+    <div class="modal-title">${isDup ? 'Duplicate template' : 'Save As'}</div>
+    <div class="modal-sub">${isDup ? 'Create an editable copy under a new name.' : 'Save the current edits as a new template. The name must be unique.'}</div>
+    <input type="text" id="tpl-name-modal-input" value="${esc(nm.value || '')}" placeholder="Template name" style="width:100%;margin:14px 0">
     <div class="modal-actions">
-      <button class="btn btn-ghost" id="tpl-dup-cancel">Cancel</button>
-      <button class="btn btn-primary" id="tpl-dup-create">Create</button>
+      <button class="btn btn-ghost" id="tpl-name-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="tpl-name-modal-ok">${isDup ? 'Create' : 'Save As'}</button>
     </div>
   </div></div>`;
+}
+
+// ── Save / Revert / Delete (Phase 4C) ────────────────────────────────────────────
+async function saveTemplate() {
+  const ed = state.templateEditor;
+  if (!ed.draft || isReadonly(ed.selectedId)) return;
+  const r = await window.discForge.templateSave(ed.draft);
+  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); return; }
+  await loadTemplates();
+  await selectTemplate(r.id);  // re-reads from disk → baseline reset, dirty cleared
+}
+function revertTemplate() {
+  const ed = state.templateEditor;
+  if (!ed.baseline) return;
+  ed.draft = JSON.parse(JSON.stringify(ed.baseline));
+  ed.error = null;
+  render();
+  refreshPreviews();
+}
+async function deleteTemplate() {
+  const ed = state.templateEditor;
+  if (isReadonly(ed.selectedId)) return;
+  const meta = templateMeta(ed.selectedId);
+  // Native Electron confirm dialog.
+  if (!window.confirm(`Delete the template “${meta ? meta.name : ed.selectedId}”? This cannot be undone.`)) return;
+  const r = await window.discForge.templateDelete(ed.selectedId);
+  if (!r || !r.ok) { window.alert('Could not delete: ' + (r && r.error)); return; }
+  await loadTemplates();  // loadTemplates re-selects a valid template (first built-in)
+  state.templateEditor.selectedId = 'classic';
+  await selectTemplate('classic');
 }
 
 // Dropdown <option>s for the build flow + editor list.
@@ -1201,7 +1243,12 @@ function templateEditorFields(tpl) {
 function templateDetailHTML(tpl, ro) {
   const toolbar = ro
     ? `<div class="tpl-toolbar"><button class="btn btn-primary btn-sm" id="tpl-duplicate">Duplicate to edit</button></div>`
-    : `<div class="tpl-toolbar"><span class="tpl-detail-note" style="margin:0">Edits live-preview below. Save / Revert / Delete arrive next.</span></div>`;
+    : `<div class="tpl-toolbar">
+        <button class="btn btn-primary btn-sm" id="tpl-save" ${isDirty() ? '' : 'disabled'}>Save</button>
+        <button class="btn btn-secondary btn-sm" id="tpl-save-as">Save As…</button>
+        <button class="btn btn-ghost btn-sm" id="tpl-revert" ${isDirty() ? '' : 'disabled'}>Revert</button>
+        <button class="btn btn-danger btn-sm" id="tpl-delete">Delete</button>
+      </div>`;
   const fields = ro ? templateReadonlyFields(tpl) : templateEditorFields(tpl);
   return `
     <div class="tpl-detail-head">
@@ -1295,7 +1342,7 @@ function buildHTML() {
     ${state.burning ? burnModalHTML() : ''}
     ${state.showWelcome ? welcomeModalHTML() : ''}
     ${state.showAbout ? aboutModalHTML() : ''}
-    ${state.templateEditor.dupName != null ? dupModalHTML() : ''}
+    ${state.templateEditor.nameModal != null ? nameModalHTML() : ''}
   `;
 }
 
@@ -2780,8 +2827,12 @@ function attachListeners() {
 
   // Templates tab — editor (Phase 4B)
   document.getElementById('tpl-duplicate')?.addEventListener('click', duplicateSelected);
-  document.getElementById('tpl-dup-cancel')?.addEventListener('click', cancelDuplicate);
-  document.getElementById('tpl-dup-create')?.addEventListener('click', confirmDuplicate);
+  document.getElementById('tpl-name-modal-cancel')?.addEventListener('click', cancelNameModal);
+  document.getElementById('tpl-name-modal-ok')?.addEventListener('click', confirmNameModal);
+  document.getElementById('tpl-save')?.addEventListener('click', saveTemplate);
+  document.getElementById('tpl-save-as')?.addEventListener('click', () => openNameModal('saveAs'));
+  document.getElementById('tpl-revert')?.addEventListener('click', revertTemplate);
+  document.getElementById('tpl-delete')?.addEventListener('click', deleteTemplate);
   document.getElementById('tpl-adv-palette')?.addEventListener('change', e => {
     state.templateEditor.advancedPalette = e.target.checked; render();
   });
