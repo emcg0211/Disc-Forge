@@ -43,7 +43,9 @@ const TABS = [
   { id:'chapters',  icon:'≡',  label:'Chapters'    },
   { id:'menu',      icon:'🎨', label:'Menu'        },
   { id:'extras',    icon:'🎞', label:'Extras'      },
+  { id:'templates', icon:'🖌', label:'Templates'   },
 ];
+const TAB_TEMPLATES = 7;  // index of the Templates tab in TABS
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -102,7 +104,21 @@ let state = {
       buttonLabels: [],
       buttonBgColor: '#2a2a4a', buttonTextColor: '#ffffff',
       buttonHighlightColor: '#ff8800', fontFamily: 'MenuFont',
+      templateId: 'classic',   // v1.13.0 — drives the menu look (see Templates tab)
     },
+  },
+  // ── v1.13.0 menu templates ────────────────────────────────────────────────
+  templates: { builtIn: [], user: [], loaded: false },
+  templateEditor: {
+    selectedId: 'classic',
+    draft: null,        // working copy (object) of the selected template
+    baseline: null,     // pristine copy for Revert / dirty detection
+    error: null,        // validateTemplate error surfaced inline
+    previews: {},       // { normal: dataURL, selected: dataURL } for selectedId
+    previewKey: null,   // hash of the draft the previews were rendered from
+    advancedPalette: false,
+    busy: false,
+    nameModal: null,    // {mode:'duplicate'|'saveAs', value} — name-entry modal (Electron lacks window.prompt)
   },
   form: {
     audio:    { lang:LANGUAGES[0], fmt:AUDIO_FORMATS[0], label:'', isDefault:false, file:null },
@@ -161,6 +177,7 @@ async function boot() {
     // queryLocalFonts not available or permission denied - use defaults
     state.systemFonts = [];
   }
+  loadTemplates();  // v1.13.0 — populate the Templates tab + build-flow dropdown
   window.discForge.onBuildProgress(handleBuildProgress);
   window.discForge.onFFmpegProgress(line => {
     // CRF encode total-duration sentinel — don't display, just store
@@ -892,6 +909,396 @@ function menuPreviewHTML() {
     '</div></div>';
 }
 
+// ── v1.13.0 Menu Templates ──────────────────────────────────────────────────────
+async function loadTemplates() {
+  const r = await window.discForge.templateList();
+  if (!r || !r.ok) { appendLog('[Templates] list failed: ' + (r && r.error)); return; }
+  state.templates = { builtIn: r.builtIn || [], user: r.user || [], loaded: true };
+  const all = [...state.templates.builtIn, ...state.templates.user];
+  if (!all.find(t => t.id === state.templateEditor.selectedId)) {
+    state.templateEditor.selectedId = all[0] ? all[0].id : 'classic';
+  }
+  render();
+  selectTemplate(state.templateEditor.selectedId);
+}
+
+function templateMeta(id) {
+  return [...(state.templates.builtIn || []), ...(state.templates.user || [])].find(t => t.id === id) || null;
+}
+function isReadonly(id) { const m = templateMeta(id); return m ? m.readonly : true; }
+
+async function selectTemplate(id) {
+  const r = await window.discForge.templateLoad(id);
+  if (!r || !r.ok) { appendLog('[Templates] load failed: ' + (r && r.error)); return; }
+  const ed = state.templateEditor;
+  ed.selectedId = id;
+  ed.draft = r.template;
+  ed.baseline = JSON.parse(JSON.stringify(r.template));
+  ed.error = null;
+  ed.previews = {};
+  ed.previewKey = null;
+  render();
+  refreshPreviews();
+}
+
+// ── Editor: validation + live preview (debounced) ────────────────────────────────
+let _previewTimer = null;
+function scheduleValidateAndPreview() {
+  clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(refreshPreviews, 200);  // debounce 200ms
+}
+async function refreshPreviews() {
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl) return;
+  // Validate first; on failure the preview pane shows the error instead of rendering.
+  const v = await window.discForge.templateValidate(tpl);
+  if (!v || !v.ok) {
+    ed.error = (v && v.error) || 'invalid template';
+    ed.previews = {};
+    render();
+    return;
+  }
+  ed.error = null;
+  const [selR, norR] = await Promise.all([
+    window.discForge.templatePreviewButton({ template: tpl, state: 'selected', label: 'Play Episode 1' }),
+    window.discForge.templatePreviewButton({ template: tpl, state: 'normal',   label: 'Play Episode 2' }),
+  ]);
+  ed.previews = {
+    selected: (selR && selR.ok) ? selR.pngBase64 : null,
+    normal:   (norR && norR.ok) ? norR.pngBase64 : null,
+  };
+  if (selR && !selR.ok) ed.error = selR.error;
+  render();
+}
+
+// Apply an edit to the working draft, keep fill colors consistent with the
+// palette, preserve focus, re-render, and re-validate+preview (debounced).
+function updateDraft(mutate) {
+  const ed = state.templateEditor;
+  if (!ed.draft) return;
+  const activeEl = document.activeElement;
+  if (activeEl && activeEl.id) { _focusedId = activeEl.id; _focusedPos = activeEl.selectionStart ?? null; }
+  mutate(ed.draft);
+  syncTemplateFills(ed.draft);
+  render();
+  scheduleValidateAndPreview();
+}
+
+// Keep button.normalFill / selectedFill rgb+hex in sync with their palette
+// entries (the encoder + preview read these; they must match the palette).
+function syncTemplateFills(tpl) {
+  for (const key of ['normalFill', 'selectedFill']) {
+    const f = tpl.button[key];
+    const e = tpl.palette.find(p => p.id === f.entry);
+    if (e) {
+      const rgb = window.discForge.color.yuvToRgb(e.Y, e.Cr, e.Cb);
+      f.rgb = rgb;
+      f.hex = window.discForge.color.rgbToHex(rgb);
+    }
+  }
+}
+
+function isDirty() {
+  const ed = state.templateEditor;
+  return !!(ed.draft && ed.baseline && JSON.stringify(ed.draft) !== JSON.stringify(ed.baseline));
+}
+
+// Name-entry modal, shared by Duplicate and Save As (Electron has no window.prompt).
+// state.templateEditor.nameModal = { mode:'duplicate'|'saveAs', value }
+function openNameModal(mode) {
+  const meta = templateMeta(state.templateEditor.selectedId);
+  const base = (state.templateEditor.draft && state.templateEditor.draft.name) || (meta && meta.name) || 'Template';
+  state.templateEditor.nameModal = { mode, value: base + ' copy' };
+  render();
+}
+function duplicateSelected() { openNameModal('duplicate'); }
+function cancelNameModal() { state.templateEditor.nameModal = null; render(); }
+async function confirmNameModal() {
+  const nm = state.templateEditor.nameModal;
+  if (!nm) return;
+  const input = document.getElementById('tpl-name-modal-input');
+  const name = (input && input.value.trim()) || 'Template copy';
+  state.templateEditor.nameModal = null;
+  let r;
+  if (nm.mode === 'duplicate') {
+    // Copies the on-disk source template.
+    r = await window.discForge.templateDuplicate(state.templateEditor.selectedId, name);
+  } else {
+    // Save As: persists the current (edited) draft under a new, unique name.
+    r = await window.discForge.templateSaveAs(state.templateEditor.draft, name);
+  }
+  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); render(); return; }
+  await loadTemplates();
+  await selectTemplate(r.id);
+}
+
+function nameModalHTML() {
+  const nm = state.templateEditor.nameModal;
+  const isDup = nm.mode === 'duplicate';
+  return `<div class="modal-backdrop"><div class="modal-box" style="max-width:420px;text-align:left">
+    <div class="modal-title">${isDup ? 'Duplicate template' : 'Save As'}</div>
+    <div class="modal-sub">${isDup ? 'Create an editable copy under a new name.' : 'Save the current edits as a new template. The name must be unique.'}</div>
+    <input type="text" id="tpl-name-modal-input" value="${esc(nm.value || '')}" placeholder="Template name" style="width:100%;margin:14px 0">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="tpl-name-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="tpl-name-modal-ok">${isDup ? 'Create' : 'Save As'}</button>
+    </div>
+  </div></div>`;
+}
+
+// ── Save / Revert / Delete (Phase 4C) ────────────────────────────────────────────
+async function saveTemplate() {
+  const ed = state.templateEditor;
+  if (!ed.draft || isReadonly(ed.selectedId)) return;
+  const r = await window.discForge.templateSave(ed.draft);
+  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); return; }
+  await loadTemplates();
+  await selectTemplate(r.id);  // re-reads from disk → baseline reset, dirty cleared
+}
+function revertTemplate() {
+  const ed = state.templateEditor;
+  if (!ed.baseline) return;
+  ed.draft = JSON.parse(JSON.stringify(ed.baseline));
+  ed.error = null;
+  render();
+  refreshPreviews();
+}
+async function deleteTemplate() {
+  const ed = state.templateEditor;
+  if (isReadonly(ed.selectedId)) return;
+  const meta = templateMeta(ed.selectedId);
+  // Native Electron confirm dialog.
+  if (!window.confirm(`Delete the template “${meta ? meta.name : ed.selectedId}”? This cannot be undone.`)) return;
+  const r = await window.discForge.templateDelete(ed.selectedId);
+  if (!r || !r.ok) { window.alert('Could not delete: ' + (r && r.error)); return; }
+  await loadTemplates();  // loadTemplates re-selects a valid template (first built-in)
+  state.templateEditor.selectedId = 'classic';
+  await selectTemplate('classic');
+}
+
+// Dropdown <option>s for the build flow + editor list.
+function templateOptionsHTML(selectedId) {
+  const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
+  if (all.length === 0) return `<option value="classic" selected>Classic</option>`;
+  return all.map(t =>
+    `<option value="${esc(t.id)}" ${t.id === selectedId ? 'selected' : ''}>${esc(t.name)}${t.readonly ? ' (built-in)' : ''}</option>`
+  ).join('');
+}
+
+function _paletteHex(entry) {
+  const rgb = window.discForge.color.yuvToRgb(entry.Y, entry.Cr, entry.Cb);
+  return '#' + window.discForge.color.rgbToHex(rgb);
+}
+function _entryRoles(tpl, id) {
+  const roles = [];
+  if (tpl.button.normalFill.entry === id)   roles.push('Normal fill');
+  if (tpl.button.selectedFill.entry === id) roles.push('Selected fill');
+  if (tpl.button.borderEntry === id)        roles.push('Border / text');
+  if (roles.length === 0) roles.push('Background');
+  return roles.join(', ');
+}
+
+// Live preview pane: Normal + Selected button PNGs, or a validation error banner.
+function previewHTML() {
+  const ed = state.templateEditor;
+  if (ed.error) return `<div class="tpl-error">⚠ ${esc(ed.error)}</div>`;
+  const img = (src, label) => `<div class="tpl-preview-col">
+      <span class="tpl-preview-label">${label}</span>
+      ${src ? `<img class="tpl-preview-img" src="${src}" alt="${label} button preview">`
+            : `<div class="tpl-preview-img" style="width:240px;height:48px"></div>`}
+    </div>`;
+  return `<div class="field"><label class="field-label">Preview</label>
+    <div class="tpl-preview-row">${img(ed.previews.normal, 'Normal')}${img(ed.previews.selected, 'Selected')}</div></div>`;
+}
+
+// "white" / "#rrggbb" → "#rrggbb" for a color <input>.
+function _fontColorHex(c) {
+  if (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c)) return c;
+  if (c === 'white') return '#ffffff';
+  if (c === 'black') return '#000000';
+  return '#ffffff';
+}
+
+// Phase 4A read-only field display (built-ins).
+function templateReadonlyFields(tpl) {
+  const bg = tpl.background;
+  const paletteRows = tpl.palette.map(e => `
+    <div class="tpl-pal-row">
+      <span class="tpl-swatch" style="background:${_paletteHex(e)}"></span>
+      <span class="tpl-pal-idx">#${e.id}</span>
+      <span class="tpl-pal-role">${esc(_entryRoles(tpl, e.id))}</span>
+      <span class="tpl-pal-val">${_paletteHex(e)} · Y${e.Y} Cr${e.Cr} Cb${e.Cb}</span>
+    </div>`).join('');
+  return `
+    <div class="field"><label class="field-label">Name</label>
+      <input type="text" value="${esc(tpl.name)}" disabled></div>
+    <div class="field"><label class="field-label">Palette</label>
+      <div class="tpl-pal-list">${paletteRows}</div></div>
+    <div class="field"><label class="field-label">Button geometry</label>
+      <div class="tpl-kv">
+        <span>Width <b>${tpl.button.width}</b></span>
+        <span>Height <b>${tpl.button.height}</b></span>
+        <span>Gap <b>${tpl.button.gap}</b></span>
+        <span>Border <b>${tpl.button.border}</b></span>
+      </div></div>
+    <div class="field"><label class="field-label">Font</label>
+      <div class="tpl-kv">
+        <span>File <b>${esc(tpl.font.file)}</b></span>
+        <span>Size ratio <b>${tpl.font.sizeRatio}</b></span>
+        <span>Color <b>${esc(tpl.font.color)}</b></span>
+      </div></div>
+    <div class="field"><label class="field-label">Background</label>
+      <div class="tpl-kv">
+        <span>Type <b>${esc(bg.type)}</b></span>
+        ${bg.type === 'solid'
+          ? `<span>Color <b>#${esc(bg.color)}</b></span><span class="tpl-swatch" style="background:#${esc(bg.color)}"></span>`
+          : `<span>Fit <b>${esc(bg.fit)}</b></span><span>Image <b>${bg.imagePath ? esc(bg.imagePath.split('/').pop()) : '(none — set per disc)'}</b></span>`}
+      </div></div>`;
+}
+
+// Phase 4B editable editor (user templates).
+function templateEditorFields(tpl) {
+  const adv = state.templateEditor.advancedPalette;
+  const b = tpl.button;
+  const bg = tpl.background;
+
+  const paletteRows = tpl.palette.map((e, i) => `
+    <div class="tpl-pal-edit">
+      <input type="color" id="tpl-pal-color-${i}" value="${_paletteHex(e)}">
+      <span class="tpl-pal-idx">#${e.id}</span>
+      <span class="tpl-pal-role">${esc(_entryRoles(tpl, e.id))}</span>
+      ${adv ? `<span class="tpl-yuv">
+        <input type="number" id="tpl-pal-Y-${i}"  value="${e.Y}"  min="0" max="255" title="Y">
+        <input type="number" id="tpl-pal-Cr-${i}" value="${e.Cr}" min="0" max="255" title="Cr">
+        <input type="number" id="tpl-pal-Cb-${i}" value="${e.Cb}" min="0" max="255" title="Cb">
+      </span>` : ''}
+    </div>`).join('');
+
+  return `
+    <div class="field"><label class="field-label">Name</label>
+      <input type="text" id="tpl-name" value="${esc(tpl.name)}" placeholder="Template name"></div>
+
+    <div class="field">
+      <label class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Palette</span>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;cursor:pointer">
+          <input type="checkbox" id="tpl-adv-palette" ${adv ? 'checked' : ''} style="width:13px;height:13px"> Edit YCbCr
+        </label>
+      </label>
+      <div class="tpl-pal-list">${paletteRows}</div>
+    </div>
+
+    <div class="field"><label class="field-label">Button geometry</label>
+      <div class="field-row" style="display:flex;gap:12px;flex-wrap:wrap">
+        <label style="font-size:11px;color:var(--text-secondary)">Width
+          <input type="number" id="tpl-geo-width"  value="${b.width}"  min="1" max="1920" style="width:80px"></label>
+        <label style="font-size:11px;color:var(--text-secondary)">Height
+          <input type="number" id="tpl-geo-height" value="${b.height}" min="1" max="1080" style="width:80px"></label>
+        <label style="font-size:11px;color:var(--text-secondary)">Gap
+          <input type="number" id="tpl-geo-gap"    value="${b.gap}"    min="0" max="400" style="width:70px"></label>
+        <label style="font-size:11px;color:var(--text-secondary)">Border
+          <input type="number" id="tpl-geo-border" value="${b.border}" min="0" max="40" style="width:70px"></label>
+      </div></div>
+
+    <div class="field"><label class="field-label">Font</label>
+      <div class="field-row" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:2px">File
+          <input type="text" value="${esc(tpl.font.file)}" disabled title="Custom fonts arrive in v1.14" style="width:140px"></label>
+        <label style="font-size:11px;color:var(--text-secondary);flex:1;min-width:160px">Size ratio (${tpl.font.sizeRatio})
+          <input type="range" id="tpl-font-size" min="0.3" max="0.9" step="0.05" value="${tpl.font.sizeRatio}" style="width:100%"></label>
+        <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:2px">Color
+          <input type="color" id="tpl-font-color" value="${_fontColorHex(tpl.font.color)}"></label>
+      </div></div>
+
+    <div class="field"><label class="field-label">Background</label>
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">
+        <label style="display:flex;gap:5px;align-items:center;font-size:12px;cursor:pointer">
+          <input type="radio" name="tpl-bg-type" id="tpl-bg-type-solid" value="solid" ${bg.type === 'solid' ? 'checked' : ''}> Solid</label>
+        <label style="display:flex;gap:5px;align-items:center;font-size:12px;cursor:pointer">
+          <input type="radio" name="tpl-bg-type" id="tpl-bg-type-image" value="image" ${bg.type === 'image' ? 'checked' : ''}> Image</label>
+      </div>
+      ${bg.type === 'solid' ? `
+        <div class="field-row" style="display:flex;gap:10px;align-items:center">
+          <span style="font-size:11px;color:var(--text-secondary)">Color</span>
+          <input type="color" id="tpl-bg-color" value="#${esc(bg.color)}">
+        </div>` : `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-xs" id="tpl-bg-image">${bg.imagePath ? esc(bg.imagePath.split('/').pop()) : 'Pick image…'}</button>
+            ${bg.imagePath ? '<button class="btn btn-ghost btn-xs" id="tpl-bg-image-clear">&#x2715;</button>' : ''}
+          </div>
+          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:11px;color:var(--text-secondary)">Fit
+              <select id="tpl-bg-fit" style="font-size:12px">
+                ${['cover', 'contain', 'stretch'].map(f => `<option value="${f}" ${bg.fit === f ? 'selected' : ''}>${f}</option>`).join('')}
+              </select></label>
+            <label style="font-size:11px;color:var(--text-secondary);display:flex;gap:6px;align-items:center">Letterbox / flatten color
+              <input type="color" id="tpl-bg-color" value="#${esc(bg.color)}"></label>
+          </div>
+        </div>`}
+    </div>`;
+}
+
+function templateDetailHTML(tpl, ro) {
+  const toolbar = ro
+    ? `<div class="tpl-toolbar"><button class="btn btn-primary btn-sm" id="tpl-duplicate">Duplicate to edit</button></div>`
+    : `<div class="tpl-toolbar">
+        <button class="btn btn-primary btn-sm" id="tpl-save" ${isDirty() ? '' : 'disabled'}>Save</button>
+        <button class="btn btn-secondary btn-sm" id="tpl-save-as">Save As…</button>
+        <button class="btn btn-ghost btn-sm" id="tpl-revert" ${isDirty() ? '' : 'disabled'}>Revert</button>
+        <button class="btn btn-danger btn-sm" id="tpl-delete">Delete</button>
+      </div>`;
+  const fields = ro ? templateReadonlyFields(tpl) : templateEditorFields(tpl);
+  return `
+    <div class="tpl-detail-head">
+      <div>
+        <div class="tpl-detail-name">${esc(tpl.name)}${(!ro && isDirty()) ? ' •' : ''}</div>
+        <div class="tpl-detail-desc">${esc(tpl.description || '')}</div>
+      </div>
+      <span class="badge ${ro ? 'badge-blue' : 'badge-green'}">${ro ? 'Built-in · read-only' : 'Custom'}</span>
+    </div>
+    ${toolbar}
+    ${previewHTML()}
+    ${fields}`;
+}
+
+function pageTemplates() {
+  const ed = state.templateEditor;
+  const t  = state.templates;
+
+  const row = (m) => `
+    <div class="tpl-list-item ${m.id === ed.selectedId ? 'active' : ''}" data-tpl-id="${esc(m.id)}">
+      <span class="tpl-list-name">${esc(m.name)}</span>
+      <span class="badge ${m.readonly ? 'badge-blue' : 'badge-green'}">${m.readonly ? 'Built-in' : 'Custom'}</span>
+    </div>`;
+
+  let listHTML = '';
+  if (!t.loaded) {
+    listHTML = `<div class="tpl-list-empty">Loading…</div>`;
+  } else {
+    listHTML += `<div class="tpl-list-group">Built-in</div>` + t.builtIn.map(row).join('');
+    listHTML += `<div class="tpl-list-group">Custom</div>`;
+    listHTML += t.user.length ? t.user.map(row).join('') : `<div class="tpl-list-empty">No custom templates yet</div>`;
+  }
+
+  const tpl = ed.draft;
+  const ro  = isReadonly(ed.selectedId);
+  const detail = tpl
+    ? templateDetailHTML(tpl, ro)
+    : `<div class="empty-state"><div class="empty-state-icon">🖌</div><div class="empty-state-text">Select a template to view it</div></div>`;
+
+  return `
+    <div class="page-header"><div class="page-header-left">
+      <div class="page-title">Menu Templates</div>
+      <div class="page-subtitle">Customize the look of interactive disc menus. Built-in templates are read-only — duplicate one to edit.</div>
+    </div></div>
+    <div class="tpl-layout">
+      <div class="tpl-list card">${listHTML}</div>
+      <div class="tpl-editor card">${detail}</div>
+    </div>`;
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────
 function render() {
   document.body.classList.toggle('light-mode', state.lightMode);
@@ -927,6 +1334,7 @@ function buildHTML() {
           ${tab===4 ? pageChapters(p, state.form.chapter) : ''}
           ${tab===5 && state.menusEnabled ? pageMenu(p) : ''}
           ${tab===6 ? pageExtras(p, state.form.extras) : ''}
+          ${tab===7 ? pageTemplates() : ''}
         </div>
       </div>
     </div>
@@ -934,6 +1342,7 @@ function buildHTML() {
     ${state.burning ? burnModalHTML() : ''}
     ${state.showWelcome ? welcomeModalHTML() : ''}
     ${state.showAbout ? aboutModalHTML() : ''}
+    ${state.templateEditor.nameModal != null ? nameModalHTML() : ''}
   `;
 }
 
@@ -1086,7 +1495,7 @@ function sidebarHTML(p, canBuild) {
 
 // ── Tab Bar ────────────────────────────────────────────────────────────────────
 function tabbarHTML(p, activeTab) {
-  const counts = [0, 0, p.audioTracks.length, p.subtitleTracks.length, p.chapters.length, 0, p.extras.length];
+  const counts = [0, 0, p.audioTracks.length, p.subtitleTracks.length, p.chapters.length, 0, p.extras.length, 0];
   return `<div class="tabbar">
     ${TABS.map((t,i)=>`
       <button class="tab-btn ${i===activeTab?'active':''}" data-tab="${i}"${i===5&&!state.menusEnabled?' style="display:none"':''}>
@@ -1169,6 +1578,14 @@ function pageProject(p) {
               <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Title</label>
               <input type="text" id="ig-menu-title" value="${esc(p.igMenuConfig?.title||'')}" placeholder="Menu title (optional)" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
             </div>
+            <div style="display:flex;gap:10px;align-items:center">
+              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Template</label>
+              <select id="ig-template" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
+                ${templateOptionsHTML(p.igMenuConfig?.templateId || 'classic')}
+              </select>
+              <button class="btn btn-ghost btn-xs" id="ig-edit-templates" title="Open the template editor">Edit…</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-tertiary);margin:-2px 0 2px 62px">The template controls the menu palette, button geometry, font, and background.</div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Background</label>
               <input type="color" id="ig-bg-color" value="${p.igMenuConfig?.bgColor||'#1a1a2e'}" style="width:36px;height:24px;cursor:pointer;border:none;border-radius:4px;padding:1px;background:none">
@@ -2398,6 +2815,76 @@ function attachListeners() {
       setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonLabels: labels } });
     });
   });
+  // Menu template dropdown (build flow) → igMenuConfig.templateId
+  document.getElementById('ig-template')?.addEventListener('change', e =>
+    setPrj({ igMenuConfig: { ...state.project.igMenuConfig, templateId: e.target.value } }));
+  document.getElementById('ig-edit-templates')?.addEventListener('click', () =>
+    setState({ tab: TAB_TEMPLATES }));
+
+  // Templates tab — list selection
+  document.querySelectorAll('.tpl-list-item').forEach(el =>
+    el.addEventListener('click', () => selectTemplate(el.dataset.tplId)));
+
+  // Templates tab — editor (Phase 4B)
+  document.getElementById('tpl-duplicate')?.addEventListener('click', duplicateSelected);
+  document.getElementById('tpl-name-modal-cancel')?.addEventListener('click', cancelNameModal);
+  document.getElementById('tpl-name-modal-ok')?.addEventListener('click', confirmNameModal);
+  document.getElementById('tpl-save')?.addEventListener('click', saveTemplate);
+  document.getElementById('tpl-save-as')?.addEventListener('click', () => openNameModal('saveAs'));
+  document.getElementById('tpl-revert')?.addEventListener('click', revertTemplate);
+  document.getElementById('tpl-delete')?.addEventListener('click', deleteTemplate);
+  document.getElementById('tpl-adv-palette')?.addEventListener('change', e => {
+    state.templateEditor.advancedPalette = e.target.checked; render();
+  });
+  document.getElementById('tpl-name')?.addEventListener('input', e =>
+    updateDraft(t => { t.name = e.target.value; }));
+
+  // Palette: RGB color picker + optional YCbCr advanced inputs (per entry).
+  (state.templateEditor.draft?.palette || []).forEach((_, i) => {
+    document.getElementById(`tpl-pal-color-${i}`)?.addEventListener('input', e => {
+      const [r, g, b] = window.discForge.color.hexToRgb(e.target.value);
+      const yuv = window.discForge.color.rgbToYuv(r, g, b);
+      updateDraft(t => { t.palette[i].Y = yuv.Y; t.palette[i].Cr = yuv.Cr; t.palette[i].Cb = yuv.Cb; });
+    });
+    ['Y', 'Cr', 'Cb'].forEach(ch => {
+      document.getElementById(`tpl-pal-${ch}-${i}`)?.addEventListener('input', e => {
+        const v = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
+        updateDraft(t => { t.palette[i][ch] = v; });
+      });
+    });
+  });
+
+  // Geometry
+  const geo = (id, key, lo, hi) => document.getElementById(id)?.addEventListener('input', e => {
+    const v = Math.max(lo, Math.min(hi, parseInt(e.target.value, 10) || lo));
+    updateDraft(t => { t.button[key] = v; });
+  });
+  geo('tpl-geo-width', 'width', 1, 1920);
+  geo('tpl-geo-height', 'height', 1, 1080);
+  geo('tpl-geo-gap', 'gap', 0, 400);
+  geo('tpl-geo-border', 'border', 0, 40);
+
+  // Font
+  document.getElementById('tpl-font-size')?.addEventListener('input', e =>
+    updateDraft(t => { t.font.sizeRatio = parseFloat(e.target.value); }));
+  document.getElementById('tpl-font-color')?.addEventListener('input', e =>
+    updateDraft(t => { t.font.color = e.target.value; }));
+
+  // Background
+  document.getElementById('tpl-bg-type-solid')?.addEventListener('change', () =>
+    updateDraft(t => { t.background.type = 'solid'; }));
+  document.getElementById('tpl-bg-type-image')?.addEventListener('change', () =>
+    updateDraft(t => { t.background.type = 'image'; }));
+  document.getElementById('tpl-bg-color')?.addEventListener('input', e =>
+    updateDraft(t => { t.background.color = e.target.value.replace(/^#/, ''); }));
+  document.getElementById('tpl-bg-fit')?.addEventListener('change', e =>
+    updateDraft(t => { t.background.fit = e.target.value; }));
+  document.getElementById('tpl-bg-image')?.addEventListener('click', async () => {
+    const r = await pickFile([{ name: 'Image', extensions: ['png', 'jpg', 'jpeg'] }]);
+    if (r) updateDraft(t => { t.background.imagePath = r; });
+  });
+  document.getElementById('tpl-bg-image-clear')?.addEventListener('click', () =>
+    updateDraft(t => { t.background.imagePath = null; }));
   document.getElementById('splash-duration')?.addEventListener('change', e => setPrj({ splashDuration: parseInt(e.target.value, 10) }));
   document.getElementById('splash-color')?.addEventListener('input',   e => setPrj({ splashColor: e.target.value.slice(1) }));
   document.getElementById('pick-splash-png')?.addEventListener('click', async () => {

@@ -1,0 +1,32 @@
+{
+  "id": "minimal",
+  "name": "Minimal",
+  "description": "A flat, monochrome menu: dark-gray normal buttons that brighten to light-gray when selected, white border, on a near-black background. Quiet and modern.",
+  "schemaVersion": 1,
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 80,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 3, "Y": 200, "Cr": 128, "Cb": 128, "T": 255 }
+  ],
+  "button": {
+    "width": 760,
+    "height": 84,
+    "gap": 28,
+    "border": 2,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [74,  74,  74],  "hex": "4a4a4a" },
+    "selectedFill": { "entry": 3, "rgb": [214, 214, 214], "hex": "d6d6d6" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1a1a1a",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

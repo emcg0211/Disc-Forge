@@ -446,3 +446,107 @@ label on any freetype-enabled ffmpeg.
 The production encoder is at parity with the hand-built winning configuration.
 v1.12.0 menu pipeline is ready for hardware burn. `prod_v1.12.0_test.iso` is the
 production candidate; S8/S9/S10/S11 remain as the A/B/C/normal-state diagnostics.
+
+---
+
+## v1.13.0 — Templates (customizable / editable / saveable menus)
+
+Branch `templates-pro`. Turns the single hardcoded "Classic" look into a
+template system without changing the proven encoder. A template controls only
+look-and-feel; every IG **encoder invariant** proven across S8–S11 (single
+epoch_start display set, 2 ODS per button, no WDS, opaque palette, defSel=1,
+ICS PTS = in_time) stays fixed in `ig-encoder.js` / `menu-builder.js`, so no
+template choice can produce a stream the LG BP350 rejects.
+
+### Schema (`src/lib/template.js`, schemaVersion 1)
+```
+{
+  id, name, description, schemaVersion,
+  palette: [ {id,Y,Cr,Cb,T} × 4 ],          // YCbCr-601; T MUST be 255 (opaque)
+  button: {
+    width, height, gap, border,             // pixels
+    borderEntry,                            // palette id for the border
+    normalFill:   { entry, rgb:[r,g,b], hex },
+    selectedFill: { entry, rgb:[r,g,b], hex }
+  },
+  font: { file, sizeRatio, color },         // file relative to assets/fonts
+  background: { type:'solid'|'image', color, imagePath, fit:'cover'|'contain'|'stretch' }
+}
+```
+`validateTemplate()` enforces the structure and the encoder's hard requirements
+(exactly 4 opaque palette entries; fill/border entries reference real palette
+ids; geometry in range), so a malformed template fails fast at load.
+
+### File layout
+- **Built-in (read-only):** `src/assets/templates/{classic,minimal,theatrical}.json`.
+  - *Classic* = the exact v1.12.0 look (navy bg, orange normal / blue selected).
+  - *Minimal* = flat monochrome (dark-gray normal / light-gray selected, thin border).
+  - *Theatrical* = `background.type:'image'`, gold/amber buttons, larger geometry.
+- **User (editable, persistent):** `app.getPath('userData')/templates/*.json`,
+  managed by `src/lib/template-store.js` (list / loadById / saveUser / duplicate /
+  deleteUser; built-in ids are reserved and cannot be saved-over or deleted).
+
+### Zero-regression guarantee
+The default path (no template) and an explicit Classic template are
+**byte-identical** to the v1.12.0 production encoder output — verified by golden
+sha256 of the emitted IG for N=1/2/3/5 menus, on both the no-ffmpeg deterministic
+path and the ffmpeg path (`tests/ig-encoder.test.js` §18). In `addMenuToDisc`,
+`templateId === 'classic'` takes the literal v1.12.0 clip-generation code; only a
+non-Classic template switches to `generateMenuVideo`.
+
+### Image preprocessing decisions
+`generateMenuVideo()` produces the menu background clip. Both solid and image
+backgrounds encode with **one locked set of H.264/AC-3 params** (`MENU_ENCODE_ARGS`)
+— byte-for-byte the v1.12.0 navy command: `libx264 / yuv420p / preset medium /
+crf 28 / bf 2 / g 24`, giving **profile High, level 4.0, 1920×1080**. User images
+can therefore never drift the codec profile into something the hardware rejects.
+- Fit modes via ffmpeg `scale`+`crop`/`pad`: **cover** (default; fill+crop),
+  **contain** (letterbox against `background.color`), **stretch** (distort).
+- Alpha is flattened against `background.color` by compositing the scaled image
+  over a color plate (`overlay`), which also supplies the letterbox color.
+- Full-range JPEG (`yuvj420p`) sources are normalized to limited-range `yuv420p`
+  in the filtergraph (`scale=out_range=tv`).
+- `validateBackgroundImage()` rejects (via ffprobe) missing/unreadable files,
+  dimensions > 8K on either axis, and animated formats (gif/apng/animated webp …).
+
+### Test discs (VLC verified)
+`tools/build_template_test.js` drives the production chain per template →
+`~/Desktop/menu-tests/template_{classic,minimal,theatrical}_test.iso`. All three
+pre-flight `displaySets=1, ODS=[0,1,2,3], wds=false, defSel=1, ICS PTS=in_time,
+segRT=true` and render both buttons distinctly in VLC with the expected look;
+theatrical confirms the **image-background** path end-to-end (visible gradient
+plate behind gold buttons). Burn scripts: `/tmp/vlc_test/burn_template_*.sh`.
+
+### Phase 4 — renderer UI (SHIPPED)
+The template editor UI is now in the app (`src/renderer.js`, vanilla DOM matching
+the existing patterns; styles in `src/styles.css`).
+- **Reachable screen:** a dedicated **Templates** tab in the main tabbar (always
+  visible). Two-pane layout: left = template list (built-in vs custom badges),
+  right = editor.
+- **Editor:** built-in templates are read-only (field display + live preview +
+  "Duplicate to edit"); user templates are fully editable — Name; Palette (native
+  color pickers per entry + an "Edit YCbCr" toggle, role labels derived from
+  `button.*Entry`/`borderEntry`); Geometry (width/height/gap/border); Font (size-
+  ratio slider + color; `MenuFont.ttf` only); Background (solid|image → color, or
+  image picker + fit + flatten/letterbox color). A **live preview** (Normal +
+  Selected button PNGs via `template-preview-button`, debounced 200 ms) re-renders
+  on every edit; edits are validated first (`template-validate`) and the pane
+  shows an inline error banner instead of rendering on failure.
+- **Persistence toolbar:** Save / Save As… / Delete / Revert over the Phase-3 IPC
+  (plus the Phase-4 `template-save-as`, which enforces name uniqueness across the
+  built-in + user catalog). Delete uses a native confirm; Save re-reads from disk.
+  Duplicate / Save As collect the name via an in-app modal (Electron has no
+  `window.prompt`).
+- **Build-flow wiring:** the **Project** tab's interactive-menu config has a
+  **Template** dropdown (catalog-populated, default `classic`) bound to
+  `igMenuConfig.templateId`, which flows to `addMenuToDisc`; absent/Classic stays
+  byte-identical to v1.12.0.
+- **Color math:** centralized in `src/lib/color.js` (YCbCr↔RGB), reused by the
+  preview renderer and exposed to the UI via `window.discForge.color.*`.
+- **CSP:** `index.html` gained `img-src 'self' data:` so the data-URI button
+  previews load.
+
+### NOT in v1.13.0 (explicitly deferred)
+- **Custom fonts** beyond the bundled `MenuFont.ttf` (template `font.file`
+  resolves within `assets/fonts`; a font-file picker is deferred to v1.14).
+- **Animated / video backgrounds** — still images and solid colors only.

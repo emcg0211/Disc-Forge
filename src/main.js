@@ -3546,6 +3546,69 @@ function fixMultiTitleNavigationForEpisodes(bdFolder, numEpisodes, ep1TsMuxerPre
   sendLog(`[MT] fixNav: post-write validation passed`);
 }
 
+// ── Menu template IPC (v1.13.0) ───────────────────────────────────────────────
+// Main-process plumbing only — the renderer-side template editor UI is Phase 4.
+// These handlers are thin wrappers over src/lib/template-store.js.
+ipcMain.handle('template-list', async () => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, builtIn: store.listBuiltIn(), user: store.listUser() };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-load', async (_, id) => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, template: store.loadById(id) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-validate', async (_, template) => {
+  try {
+    require('./lib/template').validateTemplate(template);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-save', async (_, template) => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, id: store.saveUser(template) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-save-as', async (_, { template, newName }) => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, id: store.saveAsUser(template, newName) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-duplicate', async (_, { id, newName }) => {
+  try {
+    const store = require('./lib/template-store');
+    return { ok: true, id: store.duplicate(id, newName) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-delete', async (_, id) => {
+  try {
+    const store = require('./lib/template-store');
+    store.deleteUser(id);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('template-preview-button', async (_, { id, template, state = 'selected', label } = {}) => {
+  try {
+    const store = require('./lib/template-store');
+    const { renderButtonPreviewPng } = require('./lib/menu-builder');
+    const tpl = template || store.loadById(id);
+    const png = renderButtonPreviewPng({ template: tpl, state, label, ffmpegPath: TOOLS.ffmpeg });
+    return { ok: true, pngBase64: `data:image/png;base64,${png.toString('base64')}` };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ── addMenuToDisc ─────────────────────────────────────────────────────────────
 // Creates a 2-button IG interactive menu at playlist slot 99 (00099.mpls/.clpi/.m2ts).
 // Patches MovieObject obj[2] to boot to the menu (PLAY_PL(99)) instead of EP1 directly.
@@ -3570,8 +3633,24 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}) 
   // p_sys->p_vout is non-NULL and the overlay is rendered correctly.
   const { patchClpiForIG, patchMplsForIG, patchMplsClipName, patchMplsForStill,
           buildMenuDisplaySet, injectIGIntoM2ts, patchPmtForIG, extractFirstVideoPTS,
-          rewriteVideoPesDts } =
+          rewriteVideoPesDts, generateMenuVideo } =
     require('./lib/menu-builder');
+  const templateStore = require('./lib/template-store');
+
+  // Template selection (v1.13.0). Defaults to 'classic', whose solid-navy clip +
+  // encoder output are byte-identical to v1.12.0 — so when no template is chosen
+  // the entire path below is unchanged. A non-'classic' template switches clip
+  // generation to generateMenuVideo (solid color or image background).
+  const templateId = (igMenuConfig.templateId || 'classic');
+  let menuTemplate;
+  try {
+    menuTemplate = templateStore.loadById(templateId);
+  } catch (e) {
+    sendLog(`[Menu] template '${templateId}' failed to load (${e.message}); falling back to Classic`);
+    menuTemplate = templateStore.loadById('classic');
+  }
+  const useLegacyClipGen = (menuTemplate.id === 'classic');
+  sendLog(`[Menu] template = ${menuTemplate.id} (${useLegacyClipGen ? 'legacy navy clip path' : 'generateMenuVideo path'})`);
 
   const menuTmpDir  = path.join(workDir, 'menu_tmp');
   const preTmpDir   = path.join(workDir, 'pre_tmp');
@@ -3600,18 +3679,28 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}) 
   ];
 
   sendLog('[Menu] Generating preload clip (1s) and menu clip (5s)');
-  await new Promise((resolve, reject) => {
-    const ff = spawn(TOOLS.ffmpeg, [...ffArgs(1), preMkv]);
-    ff.stderr.on('data', () => {});
-    ff.on('error', reject);
-    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg preload exit ${code}`)));
-  });
-  await new Promise((resolve, reject) => {
-    const ff = spawn(TOOLS.ffmpeg, [...ffArgs(5), menuMkv]);
-    ff.stderr.on('data', () => {});
-    ff.on('error', reject);
-    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg menu bg exit ${code}`)));
-  });
+  if (useLegacyClipGen) {
+    // v1.12.0 legacy path — byte-identical navy clips.
+    await new Promise((resolve, reject) => {
+      const ff = spawn(TOOLS.ffmpeg, [...ffArgs(1), preMkv]);
+      ff.stderr.on('data', () => {});
+      ff.on('error', reject);
+      ff.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg preload exit ${code}`)));
+    });
+    await new Promise((resolve, reject) => {
+      const ff = spawn(TOOLS.ffmpeg, [...ffArgs(5), menuMkv]);
+      ff.stderr.on('data', () => {});
+      ff.on('error', reject);
+      ff.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg menu bg exit ${code}`)));
+    });
+  } else {
+    // Template path. Preload is a solid plate (vout initializer, no IG) in the
+    // template's background color; the menu clip is the full template background
+    // (solid or image), both via the locked-params generateMenuVideo.
+    const preTpl = { ...menuTemplate, background: { ...menuTemplate.background, type: 'solid' } };
+    generateMenuVideo({ template: preTpl,    ffmpegPath: TOOLS.ffmpeg, ffprobePath: TOOLS.ffprobe, outputPath: preMkv,  duration: 1 });
+    generateMenuVideo({ template: menuTemplate, ffmpegPath: TOOLS.ffmpeg, ffprobePath: TOOLS.ffprobe, outputPath: menuMkv, duration: 5 });
+  }
 
   // ── Step 2: tsMuxeR for preload and menu clips ────────────────────────────
   async function runTsMuxer(mkv, outBdmv, label) {
@@ -3679,6 +3768,7 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}) 
     pts:        videoPts,
     labels:     menuLabels,
     ffmpegPath: TOOLS.ffmpeg,
+    template:   menuTemplate,
   });
   const injectedM2ts = injectIGIntoM2ts(videoM2ts, igTs);
   sendLog(`[Menu] IG injected: ${igTs.length} bytes TS → m2ts now ${injectedM2ts.length} bytes`);

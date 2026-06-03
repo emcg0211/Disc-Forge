@@ -105,7 +105,7 @@ npm start
 
 ## Known Limitations
 
-- **Interactive menus (experimental)** — available behind the **Menus (Beta)** toggle in Project Settings. They render correctly in software players (libbluray/VLC) but do not yet reliably render buttons on standalone hardware Blu-ray players. The **autoplay-default path is the supported production workflow**; leave the Beta toggle off for hardware-bound discs.
+- **Interactive menus (experimental)** — available behind the **Menus (Beta)** toggle in Project Settings. They render correctly in software players (libbluray/VLC) but do not yet reliably render buttons on standalone hardware Blu-ray players. The **autoplay-default path is the supported production workflow**; leave the Beta toggle off for hardware-bound discs. As of **v1.14.0**, menu button labels are drawn with a built-in canvas renderer — text now renders with no dependency on a `drawtext`-enabled ffmpeg build.
 - Trick-play on Title 2+ depends on player firmware; tested on LG BP350
 - Subtitle pipeline is partially wired; for embedded PGS in source MKV it works; SRT/ASS conversion is not yet end-to-end
 - No animated disc menus yet
@@ -151,6 +151,7 @@ Disc Forge is free for **personal, non-commercial use**. See [LICENSE](LICENSE) 
 - [tsMuxeR](https://github.com/justdan96/tsMuxeR) — Blu-ray muxing
 - [mkvtoolnix](https://mkvtoolnix.download/) — MKV container tools
 - [xorriso](https://www.gnu.org/software/xorriso/) — ISO/UDF disc image creation
+- [node-canvas](https://github.com/Automattic/node-canvas) — in-process menu button text rendering (no ffmpeg `drawtext` required, since v1.14.0)
 - [Electron](https://www.electronjs.org/) — app framework
 
 ---

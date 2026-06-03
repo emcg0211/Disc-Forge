@@ -11,6 +11,12 @@
  *     → renderButtonBitmap(text,state) or renderButtonPixels(state)
  *     → ig-encoder.buildIGDisplaySet() assembles the full BD IG display set
  *
+ * Button text is rendered in-process with the `canvas` package (node-canvas):
+ * the label is drawn onto an off-screen canvas with the bundled MenuFont, the
+ * raw pixels are read back via getImageData(), and each pixel is quantized to
+ * the nearest palette entry. renderButtonPixels() (solid color blocks, no text)
+ * remains the true fallback if the canvas module fails to load.
+ *
  * Palette (all entries opaque, T=255):
  *   0 = background near-black (opaque; unused by the button bitmaps)
  *   1 = white (text + border)
@@ -26,114 +32,172 @@ const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
 
+// node-canvas is loaded lazily so that a missing/broken native build degrades
+// to the solid-fill fallback (renderButtonPixels) instead of crashing the app.
+let _canvasLib;        // undefined = not tried, null = load failed, object = loaded
+const _registeredFonts = new Set();  // fontPath → registered once with registerFont
+function _getCanvas() {
+  if (_canvasLib !== undefined) return _canvasLib;
+  try {
+    _canvasLib = require('canvas');
+  } catch {
+    _canvasLib = null;
+  }
+  return _canvasLib;
+}
+
 const { buildNavCmd, buildIGDisplaySet, encodePDS, encodeODS, encodeWDS, encodeICS, encodeEND, encodeRLE, wrapInPES, buildSegment, SEG } = require('./ig-encoder');
+const { defaultTemplate, resolveFontPath } = require('./template');
 
-// ── Palette definition ─────────────────────────────────────────────────────────
-// YCbCr-601 values. The 5th PDS byte (T) is ALPHA: **T=255 = opaque, T=0 = fully
-// transparent** (confirmed empirically by the S11 disc — every entry T=255 rendered
-// solid in VLC). The pre-Phase-6 palette had the fill/border entries at T=0, i.e.
-// fully transparent → the buttons were invisible (Finding C). All entries are now
-// T=255 so the button bitmaps actually paint. (See docs/menu_research_progress.md.)
-const PALETTE = [
-  { id: 0, Y: 16,  Cr: 128, Cb: 128, T: 255 },  // background near-black (opaque; unused by button bitmaps)
-  { id: 1, Y: 235, Cr: 128, Cb: 128, T: 255 },  // white border (both states)
-  { id: 2, Y: 112, Cr: 184, Cb:  42, T: 255 },  // orange-yellow — NORMAL button fill
-  { id: 3, Y:  45, Cr: 103, Cb: 171, T: 255 },  // dark slate blue — SELECTED button fill
-];
+// ── Template-derived defaults ───────────────────────────────────────────────────
+// All look-and-feel values (palette, geometry, font, fill colors, background) now
+// live in templates (src/assets/templates/*.json — see src/lib/template.js). The
+// "Classic" template holds the exact v1.12.0 production look, so the module-level
+// constants below are derived from it. This keeps the default code path (and the
+// public exports PALETTE/BTN_W/BTN_H/ENTRY_RGB/FONT_PATH) byte-identical to v1.12.0
+// while letting buildMenuDisplaySet accept an alternate template.
+//
+// The palette's 5th PDS byte (T) is ALPHA: T=255 = opaque, T=0 = fully transparent
+// (confirmed by the S11 disc — every entry T=255 rendered solid in VLC). Templates
+// are validated to keep all entries opaque (validateTemplate enforces T=255), so the
+// button bitmaps always paint. (See docs/menu_research_progress.md.)
+const CLASSIC = defaultTemplate();
 
-// ── Button geometry ───────────────────────────────────────────────────────────
-const BTN_W   = 800;
-const BTN_H   = 90;
-const BTN_GAP = 30;  // vertical gap between buttons
-const BORDER  = 3;   // border thickness in pixels
+// Palette (4 opaque YCbCr-601 entries): 0=near-black bg, 1=white border,
+// 2=NORMAL fill, 3=SELECTED fill.
+const PALETTE = CLASSIC.palette;
+
+// ── Button geometry (Classic defaults) ──────────────────────────────────────────
+const BTN_W   = CLASSIC.button.width;
+const BTN_H   = CLASSIC.button.height;
+const BTN_GAP = CLASSIC.button.gap;     // vertical gap between buttons
+const BORDER  = CLASSIC.button.border;  // border thickness in pixels
 
 // ── Text rendering constants ──────────────────────────────────────────────────
-// Font for drawtext (SIL Open Font License — Inter Regular).
-const FONT_PATH = path.join(__dirname, '../assets/fonts/MenuFont.ttf');
+// Font for canvas text rendering (SIL Open Font License — Inter Regular).
+const FONT_PATH = resolveFontPath(CLASSIC.font.file);
 
-// RGB equivalents of our YCbCr palette entries — used for ffmpeg bg and pixel quantization.
-// Derived from: R = 1.164*(Y-16) + 1.596*(Cr-128), G = ..., B = ...
+// RGB equivalents of the Classic fill palette entries — used for pixel
+// quantization. Derived from YCbCr in the template JSON.
 const ENTRY_RGB = {
-  2: [201, 100,   0],  // orange — NORMAL fill (idx 2)
-  3: [  0,  37, 120],  // dark slate blue — SELECTED fill (idx 3)
+  [CLASSIC.button.normalFill.entry]:   CLASSIC.button.normalFill.rgb,
+  [CLASSIC.button.selectedFill.entry]: CLASSIC.button.selectedFill.rgb,
 };
-// Hex strings for ffmpeg color= filter
-const ENTRY_HEX = {
-  2: 'c96400',  // orange (normal)
-  3: '002578',  // dark blue (selected)
-};
+
+/**
+ * Build a render "style" — the look values renderButtonBitmap/renderButtonPixels
+ * need — from a template object. Defaults to the Classic template so callers that
+ * pass nothing keep the v1.12.0 behavior exactly.
+ *
+ * @param {object} [tpl] - a validated template (defaults to Classic)
+ * @returns {object} { w, h, gap, border, borderEntry, normalEntry, selEntry,
+ *                      normalRGB, selRGB, normalHex, selHex, fontPath, fontSizeRatio, fontColor }
+ */
+function styleFromTemplate(tpl = CLASSIC) {
+  const b = tpl.button;
+  return {
+    w:            b.width,
+    h:            b.height,
+    gap:          b.gap,
+    border:       b.border,
+    borderEntry:  b.borderEntry,
+    normalEntry:  b.normalFill.entry,
+    selEntry:     b.selectedFill.entry,
+    normalRGB:    b.normalFill.rgb,
+    selRGB:       b.selectedFill.rgb,
+    normalHex:    b.normalFill.hex,
+    selHex:       b.selectedFill.hex,
+    fontPath:     resolveFontPath(tpl.font.file),
+    fontSizeRatio: tpl.font.sizeRatio,
+    fontColor:    tpl.font.color,
+  };
+}
+
+// The Classic-derived style: the default for the render helpers.
+const DEFAULT_STYLE = styleFromTemplate(CLASSIC);
 
 function _colorDist2(r1, g1, b1, r2, g2, b2) {
   return (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2;
 }
 
 /**
- * Render a button bitmap with text label using ffmpeg drawtext.
- * Falls back to renderButtonPixels if ffmpeg or font is unavailable.
+ * Render a button bitmap with a centered text label using node-canvas.
+ *
+ * The label is drawn with the bundled MenuFont onto an off-screen canvas filled
+ * with the button's fill color; the raw RGBA pixels are read back and each is
+ * quantized to the nearest palette entry (text/border color vs fill color).
+ * Falls back to renderButtonPixels (solid blocks, no text) if the canvas module
+ * fails to load, the font is missing, the label is empty, or anything throws.
  *
  * @param {string} text       - button label text
  * @param {'normal'|'selected'|'activated'} state
  * @param {number} w          - button width in pixels
  * @param {number} h          - button height in pixels
- * @param {string} ffmpegPath - path to ffmpeg binary
+ * @param {object} [style]    - render style (from styleFromTemplate); defaults to Classic
  * @returns {Uint8Array} palette-indexed pixel array (w*h bytes)
  */
-function renderButtonBitmap(text, state, w, h, ffmpegPath) {
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || !fs.existsSync(FONT_PATH) || !text) {
-    return renderButtonPixels(w, h, state);
+function renderButtonBitmap(text, state, w, h, style = DEFAULT_STYLE) {
+  const fontPath = style.fontPath;
+  const canvasLib = _getCanvas();
+  if (!canvasLib || !fs.existsSync(fontPath) || !text) {
+    return renderButtonPixels(w, h, state, style);
   }
 
-  const fillEntry = state === 'normal' ? 2 : 3;  // normal=idx2, selected/activated=idx3
-  const fillRGB   = ENTRY_RGB[fillEntry];
-  const bgHex     = ENTRY_HEX[fillEntry];
-  const fontSize  = Math.round((h - BORDER * 2) * 0.55);
-
-  // Escape characters that break ffmpeg filter syntax
-  const safeText = (text || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "’")    // curly apostrophe (avoids shell quoting issues)
-    .replace(/:/g, '\\:')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-
-  let rawData;
   try {
-    rawData = execFileSync(ffmpegPath, [
-      '-f', 'lavfi',
-      '-i', `color=c=0x${bgHex}:size=${w}x${h}:rate=1`,
-      '-frames:v', '1',
-      '-vf', `drawtext=fontfile=${FONT_PATH}:text='${safeText}':fontsize=${fontSize}:fontcolor=white:x=(w-tw)/2:y=(h-th)/2`,
-      '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-      'pipe:1',
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {
-    return renderButtonPixels(w, h, state);
-  }
+    const { createCanvas, registerFont } = canvasLib;
 
-  if (!rawData || rawData.length < w * h * 3) {
-    return renderButtonPixels(w, h, state);
-  }
+    // Register the font family once per font file (must precede createCanvas).
+    if (!_registeredFonts.has(fontPath)) {
+      registerFont(fontPath, { family: 'MenuFont' });
+      _registeredFonts.add(fontPath);
+    }
 
-  // Quantize RGB pixels to nearest palette entry (1=white vs fillEntry)
-  const WHITE = [255, 255, 255];
-  const pixels = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const r = rawData[i * 3], g = rawData[i * 3 + 1], b = rawData[i * 3 + 2];
-    const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
-    const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
-    pixels[i] = dWhite <= dFill ? 1 : fillEntry;
-  }
+    const isNormal  = state === 'normal';
+    const fillEntry = isNormal ? style.normalEntry : style.selEntry;
+    const fillRGB   = isNormal ? style.normalRGB   : style.selRGB;
+    const border      = style.border;
+    const borderEntry = style.borderEntry;
+    const fontSize  = Math.round((h - border * 2) * style.fontSizeRatio);
 
-  // Overlay 3px white border
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (x < BORDER || x >= w - BORDER || y < BORDER || y >= h - BORDER) {
-        pixels[y * w + x] = 1;
+    const canvas = createCanvas(w, h);
+    const ctx    = canvas.getContext('2d');
+
+    // Fill the canvas with the button fill color.
+    ctx.fillStyle = `rgb(${fillRGB[0]}, ${fillRGB[1]}, ${fillRGB[2]})`;
+    ctx.fillRect(0, 0, w, h);
+
+    // Draw the label centered both horizontally and vertically.
+    ctx.fillStyle    = style.fontColor;
+    ctx.font         = `${fontSize}px MenuFont`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2);
+
+    // Read back raw RGBA pixels and quantize to the nearest palette entry
+    // (text/border color vs fill color — anti-aliased edges snap to the closer).
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const WHITE = [255, 255, 255];
+    const pixels = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+      const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
+      const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
+      pixels[i] = dWhite <= dFill ? borderEntry : fillEntry;
+    }
+
+    // Overlay the border.
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (x < border || x >= w - border || y < border || y >= h - border) {
+          pixels[y * w + x] = borderEntry;
+        }
       }
     }
-  }
 
-  return pixels;
+    return pixels;
+  } catch {
+    return renderButtonPixels(w, h, state, style);
+  }
 }
 
 // IG stream PID: BD spec assigns 0x1400-0x141F to Interactive Graphics.
@@ -149,16 +213,18 @@ const IG_PID = 0x1400;
  * @param {number} w - button width
  * @param {number} h - button height
  * @param {'normal'|'selected'|'activated'} state
+ * @param {object} [style] - render style (from styleFromTemplate); defaults to Classic
  * @returns {Uint8Array} palette-indexed pixels (w*h bytes)
  */
-function renderButtonPixels(w, h, state) {
-  const bgIdx     = state === 'normal' ? 2 : 3;   // normal=idx2 fill, selected/activated=idx3 fill
-  const borderIdx = 1;                              // white border
+function renderButtonPixels(w, h, state, style = DEFAULT_STYLE) {
+  const bgIdx     = state === 'normal' ? style.normalEntry : style.selEntry;
+  const borderIdx = style.borderEntry;
+  const border    = style.border;
   const pixels    = new Uint8Array(w * h);
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const isBorder = x < BORDER || x >= w - BORDER || y < BORDER || y >= h - BORDER;
+      const isBorder = x < border || x >= w - border || y < border || y >= h - border;
       pixels[y * w + x] = isBorder ? borderIdx : bgIdx;
     }
   }
@@ -189,31 +255,39 @@ function renderButtonPixels(w, h, state) {
  * @param {number}   opts.pl2          - legacy: playlist for button 1 (ignored when playlists provided)
  * @param {number}   opts.pts          - PTS for the display set in 90kHz ticks (default 0)
  * @param {string[]} opts.labels       - button label text array
- * @param {string}   opts.ffmpegPath   - ffmpeg binary path for text rendering
+ * @param {string}   opts.ffmpegPath   - accepted for API compatibility; unused (text is rendered in-process via canvas)
+ * @param {object}   opts.template     - menu template (look/geometry/palette); defaults to Classic
  * @returns {Buffer} TS-packetized IG PES stream (188-byte packets)
  */
-function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null } = {}) {
+function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null, template = null } = {}) {
   const playlistIds = playlists || [pl1, pl2];
   const N = playlistIds.length;
 
+  // Template controls look + geometry + palette. Absent → Classic (v1.12.0).
+  const tpl   = template || CLASSIC;
+  const style = styleFromTemplate(tpl);
+  const btnW  = style.w;
+  const btnH  = style.h;
+  const btnGap = style.gap;
+
   // Auto-layout: center all buttons vertically, left-align buttons horizontally
-  const totalH = N * BTN_H + (N - 1) * BTN_GAP;
+  const totalH = N * btnH + (N - 1) * btnGap;
   const topY   = Math.round((videoHeight - totalH) / 2);
-  const btnX   = Math.round((videoWidth  - BTN_W)  / 2);
-  const btnY   = Array.from({ length: N }, (_, i) => topY + i * (BTN_H + BTN_GAP));
+  const btnX   = Math.round((videoWidth  - btnW)  / 2);
+  const btnY   = Array.from({ length: N }, (_, i) => topY + i * (btnH + btnGap));
 
   // Visible normal-state model (v1.12.0 / S11): TWO bitmaps per button.
-  // obj_id (2i)=NORMAL fill (idx 2), obj_id (2i+1)=SELECTED fill (idx 3).
+  // obj_id (2i)=NORMAL fill, obj_id (2i+1)=SELECTED fill (entries from template).
   const objects = [];
   const bogs = [];
   for (let i = 0; i < N; i++) {
     const label = (labels[i] && labels[i].trim()) ? labels[i].trim() : `Play Episode ${i + 1}`;
     const normalObjId = 2 * i;
     const selObjId    = 2 * i + 1;
-    objects.push({ objectId: normalObjId, version: 0, width: BTN_W, height: BTN_H,
-                   pixels: renderButtonBitmap(label, 'normal',   BTN_W, BTN_H, ffmpegPath) });
-    objects.push({ objectId: selObjId,    version: 0, width: BTN_W, height: BTN_H,
-                   pixels: renderButtonBitmap(label, 'selected', BTN_W, BTN_H, ffmpegPath) });
+    objects.push({ objectId: normalObjId, version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(label, 'normal',   btnW, btnH, style) });
+    objects.push({ objectId: selObjId,    version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(label, 'selected', btnW, btnH, style) });
 
     // One BOG per button, circular up/down navigation.
     // Button IDs are 1-based per BD spec (valid range [1, 0xEFFF]; 0 is reserved).
@@ -261,7 +335,7 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
         bogs,
       }],
     },
-    palette: { paletteId: 0, version: 0, entries: PALETTE },
+    palette: { paletteId: 0, version: 0, entries: tpl.palette },
     // No WDS — the IG button render path never consults it (matches Toast/S11).
     windows: null,
     objects,
@@ -851,12 +925,256 @@ function rewriteVideoPesDts(m2tsBuf, frameDuration = 3750) {
   return out;
 }
 
+// ── Menu background video generation (v1.13.0) ───────────────────────────────────
+// The menu clip is the video the IG is injected into. v1.12.0 proved a specific
+// H.264 profile (the navy-frame ffmpeg command) renders correctly on the LG BP350.
+// These params are LOCKED here so user-supplied backgrounds (solid or image) always
+// produce a stream with the same codec profile/level/pix_fmt and can never drift
+// into something the hardware rejects. Anything that wants to change the look does
+// so through the template's background config — never by changing the encoder args.
+const MENU_VIDEO = { width: 1920, height: 1080, fps: 24 };
+
+// Locked H.264/AC-3 encode args — byte-for-byte the v1.12.0 navy-frame command.
+// (Verified: profile High, level 4.0, yuv420p, 2 B-frames; GOP 24.)
+const MENU_ENCODE_ARGS = [
+  '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+  '-preset', 'medium', '-crf', '28',
+  '-bf', '2', '-g', '24',
+  '-c:a', 'ac3', '-b:a', '192k',
+];
+
+const MAX_IMAGE_DIM = 7680;  // reject anything larger than 8K on either axis
+const ANIMATED_CODECS = new Set(['gif', 'apng', 'webp', 'mng', 'flv1']);
+
+/**
+ * Validate a user-supplied background image before it is encoded into a menu
+ * clip. Uses ffprobe to read the first video stream. Throws on:
+ *   - missing / unreadable file
+ *   - no decodable video stream
+ *   - dimensions larger than 8K on either axis
+ *   - animated formats (multi-frame: gif / apng / animated webp …)
+ *
+ * @param {string} imagePath
+ * @param {string} ffprobePath - path to ffprobe binary
+ * @returns {{width:number,height:number,codec:string}}
+ */
+function validateBackgroundImage(imagePath, ffprobePath) {
+  if (!imagePath || !fs.existsSync(imagePath)) {
+    throw new Error(`background image not found: ${imagePath}`);
+  }
+  if (!ffprobePath || !fs.existsSync(ffprobePath)) {
+    throw new Error(`validateBackgroundImage: ffprobe not available at ${ffprobePath}`);
+  }
+  let info;
+  try {
+    const out = execFileSync(ffprobePath, [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,codec_name,nb_frames',
+      '-of', 'json', imagePath,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    info = JSON.parse(out.toString());
+  } catch (e) {
+    throw new Error(`background image is not a readable image: ${imagePath} (${e.message})`);
+  }
+  const s = info && info.streams && info.streams[0];
+  if (!s || !s.width || !s.height) {
+    throw new Error(`background image has no decodable video stream: ${imagePath}`);
+  }
+  if (s.width > MAX_IMAGE_DIM || s.height > MAX_IMAGE_DIM) {
+    throw new Error(`background image too large (${s.width}x${s.height}); max ${MAX_IMAGE_DIM}px on either axis`);
+  }
+  const nbFrames = parseInt(s.nb_frames, 10);
+  if (ANIMATED_CODECS.has(s.codec_name) || (Number.isFinite(nbFrames) && nbFrames > 1)) {
+    throw new Error(`animated images are not supported as menu backgrounds (codec=${s.codec_name}, frames=${s.nb_frames})`);
+  }
+  return { width: s.width, height: s.height, codec: s.codec_name };
+}
+
+/**
+ * Build the ffmpeg scale expression for a given fit mode, targeting 1920×1080.
+ *   cover   — fill the frame, crop the overflow (default; no letterbox)
+ *   contain — fit inside the frame, letterbox the remainder (bg color)
+ *   stretch — scale to exactly 1920×1080, distorting aspect ratio
+ */
+function _fitScaleExpr(fit, w, h) {
+  switch (fit) {
+    case 'contain':
+      return `scale=${w}:${h}:force_original_aspect_ratio=decrease`;
+    case 'stretch':
+      return `scale=${w}:${h},setsar=1`;
+    case 'cover':
+    default:
+      return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
+  }
+}
+
+/**
+ * Generate the menu background clip (the video the IG is later injected into).
+ *
+ * Solid backgrounds reproduce the v1.12.0 navy-frame logic with the template's
+ * color. Image backgrounds load the user image, scale+pad it per the template's
+ * fit mode, flatten any alpha against the template's background color, and encode
+ * with the SAME locked H.264 params. Either way the output is a 1920×1080 H.264
+ * clip with the proven codec profile, plus a silent AC-3 track.
+ *
+ * @param {object} opts
+ * @param {object} opts.template    - validated template (background drives this)
+ * @param {string} opts.ffmpegPath  - ffmpeg binary
+ * @param {string} opts.ffprobePath - ffprobe binary (required to validate images)
+ * @param {string} opts.outputPath  - output clip path (.mkv recommended)
+ * @param {number} [opts.duration]  - clip duration in seconds (default 5)
+ * @returns {string} outputPath
+ */
+function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, duration = 5 } = {}) {
+  if (!template || !template.background) throw new Error('generateMenuVideo: template with a background is required');
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) throw new Error(`generateMenuVideo: ffmpeg not available at ${ffmpegPath}`);
+  if (!outputPath) throw new Error('generateMenuVideo: outputPath is required');
+
+  const bg = template.background;
+  const { width: W, height: H, fps } = MENU_VIDEO;
+  const anull = 'anullsrc=channel_layout=stereo:sample_rate=48000';
+
+  let args;
+  if (bg.type === 'image') {
+    if (!bg.imagePath) throw new Error('generateMenuVideo: background.type is "image" but background.imagePath is null');
+    validateBackgroundImage(bg.imagePath, ffprobePath);
+    // Composite the scaled image over a solid color plate. This flattens any
+    // alpha against background.color AND supplies the letterbox color for
+    // 'contain'. format=yuv420p drops the (now-flattened) alpha for encoding.
+    const scaleExpr = _fitScaleExpr(bg.fit, W, H);
+    // Final scale with out_range=tv normalizes full-range (JPEG → yuvj420p) sources
+    // to limited-range yuv420p, which BD-ROM requires; format=yuv420p drops the
+    // (already-flattened) alpha. Without it, JPEG inputs would emit yuvj420p.
+    const filter =
+      `color=c=0x${bg.color}:s=${W}x${H}[bgc];` +
+      `[0:v]${scaleExpr}[fg];` +
+      `[bgc][fg]overlay=(W-w)/2:(H-h)/2,scale=${W}:${H}:out_range=tv,format=yuv420p[v]`;
+    args = [
+      '-y',
+      '-loop', '1', '-i', bg.imagePath,
+      '-f', 'lavfi', '-i', anull,
+      '-filter_complex', filter,
+      '-map', '[v]', '-map', '1:a',
+      '-t', String(duration), '-r', String(fps),
+      ...MENU_ENCODE_ARGS,
+      outputPath,
+    ];
+  } else {
+    // Solid: the v1.12.0 navy-frame logic, parameterized on background.color.
+    args = [
+      '-y',
+      '-f', 'lavfi', '-i', `color=c=0x${bg.color}:size=${W}x${H}:rate=${fps}`,
+      '-f', 'lavfi', '-i', anull,
+      '-map', '0:v', '-map', '1:a',
+      '-t', String(duration),
+      ...MENU_ENCODE_ARGS,
+      outputPath,
+    ];
+  }
+
+  try {
+    execFileSync(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    const detail = (e.stderr || '').toString().slice(-600);
+    throw new Error(`generateMenuVideo: ffmpeg failed: ${detail || e.message}`);
+  }
+  if (!fs.existsSync(outputPath)) throw new Error(`generateMenuVideo: no output produced at ${outputPath}`);
+  return outputPath;
+}
+
+// ── Button preview rendering (v1.13.0 — for the template editor UI) ───────────────
+// YCbCr-601 (limited range) → RGB via the shared color module (single source of
+// truth, also exposed to the renderer's palette pickers).
+const { yuvToRgb: _yuvToRgb } = require('./color');
+
+// Standard IEEE CRC-32 (reflected) — required for PNG chunk checksums. (Distinct
+// from mpegCrc32 above, which uses the MPEG-TS polynomial.)
+let _crcTable = null;
+function _crc32(buf) {
+  if (!_crcTable) {
+    _crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      _crcTable[n] = c >>> 0;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) crc = _crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function _pngChunk(type, data) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const typeBuf = Buffer.from(type, 'ascii');
+  const body = Buffer.concat([typeBuf, data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(_crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+// Encode an 8-bit RGB buffer (w*h*3) as a PNG (color type 2). No deps beyond zlib.
+function _encodePng(rgb, w, h) {
+  const zlib = require('zlib');
+  const sig  = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 2;   // color type RGB
+  // [10] compression=0, [11] filter=0, [12] interlace=0
+  // Prepend filter byte (0 = none) to each scanline.
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0;
+    rgb.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
+  }
+  const idat = zlib.deflateSync(raw);
+  return Buffer.concat([sig, _pngChunk('IHDR', ihdr), _pngChunk('IDAT', idat), _pngChunk('IEND', Buffer.alloc(0))]);
+}
+
+/**
+ * Render a single menu button at a template's settings as a PNG — for the
+ * template editor's preview pane. Mirrors exactly how the button is drawn on the
+ * disc (same renderButtonBitmap/renderButtonPixels path and palette), so the
+ * preview is faithful — including the real, canvas-rendered text label. The PNG
+ * itself is encoded in-process (no ffmpeg). ffmpegPath is accepted for API
+ * compatibility but unused.
+ *
+ * @param {object} opts
+ * @param {object} opts.template   - validated template
+ * @param {'normal'|'selected'} [opts.state] - button state to preview (default 'selected')
+ * @param {string} [opts.label]    - button label (default 'Play Episode 1')
+ * @param {string} [opts.ffmpegPath] - accepted for API compatibility; unused
+ * @returns {Buffer} PNG image of one button (template button width × height)
+ */
+function renderButtonPreviewPng({ template, state = 'selected', label = 'Play Episode 1', ffmpegPath = null } = {}) {
+  if (!template || !template.button || !template.palette) {
+    throw new Error('renderButtonPreviewPng: a validated template is required');
+  }
+  const style = styleFromTemplate(template);
+  const w = style.w, h = style.h;
+  const idx = renderButtonBitmap(label, state, w, h, style);
+  const pal = {};
+  for (const e of template.palette) pal[e.id] = _yuvToRgb(e.Y, e.Cr, e.Cb);
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < w * h; i++) {
+    const c = pal[idx[i]] || [0, 0, 0];
+    rgb[i * 3] = c[0]; rgb[i * 3 + 1] = c[1]; rgb[i * 3 + 2] = c[2];
+  }
+  return _encodePng(rgb, w, h);
+}
+
 module.exports = {
   buildMenuDisplaySet,
+  generateMenuVideo,
+  validateBackgroundImage,
+  renderButtonPreviewPng,
+  MENU_VIDEO,
+  MENU_ENCODE_ARGS,
   extractFirstVideoPTS,
   rewriteVideoPesDts,
   renderButtonBitmap,
   renderButtonPixels,
+  styleFromTemplate,
   convertTsBdFormat,
   injectIGIntoM2ts,
   patchPmtForIG,
@@ -866,7 +1184,7 @@ module.exports = {
   patchMplsForStill,
   findPtsInsertionPoint,
   IG_PID,
-  BTN_W, BTN_H,
+  BTN_W, BTN_H, BTN_GAP, BORDER,
   PALETTE,
   ENTRY_RGB,
   FONT_PATH,

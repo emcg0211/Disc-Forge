@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.discforge.studio",
     "productName": "Disc Forge",
-    "copyright": "Copyright \u00a9 2026 ETHM",
+    "copyright": "Copyright © 2026 ETHM",
     "directories": {
       "output": "dist"
     },
@@ -95,5 +95,8 @@
     ],
     "asar": false,
     "afterPack": "scripts/afterPack.js"
+  },
+  "dependencies": {
+    "canvas": "^3.2.3"
   }
 }
