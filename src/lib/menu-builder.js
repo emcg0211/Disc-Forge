@@ -11,6 +11,12 @@
  *     → renderButtonBitmap(text,state) or renderButtonPixels(state)
  *     → ig-encoder.buildIGDisplaySet() assembles the full BD IG display set
  *
+ * Button text is rendered in-process with the `canvas` package (node-canvas):
+ * the label is drawn onto an off-screen canvas with the bundled MenuFont, the
+ * raw pixels are read back via getImageData(), and each pixel is quantized to
+ * the nearest palette entry. renderButtonPixels() (solid color blocks, no text)
+ * remains the true fallback if the canvas module fails to load.
+ *
  * Palette (all entries opaque, T=255):
  *   0 = background near-black (opaque; unused by the button bitmaps)
  *   1 = white (text + border)
@@ -25,6 +31,20 @@
 const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
+
+// node-canvas is loaded lazily so that a missing/broken native build degrades
+// to the solid-fill fallback (renderButtonPixels) instead of crashing the app.
+let _canvasLib;        // undefined = not tried, null = load failed, object = loaded
+const _registeredFonts = new Set();  // fontPath → registered once with registerFont
+function _getCanvas() {
+  if (_canvasLib !== undefined) return _canvasLib;
+  try {
+    _canvasLib = require('canvas');
+  } catch {
+    _canvasLib = null;
+  }
+  return _canvasLib;
+}
 
 const { buildNavCmd, buildIGDisplaySet, encodePDS, encodeODS, encodeWDS, encodeICS, encodeEND, encodeRLE, wrapInPES, buildSegment, SEG } = require('./ig-encoder');
 const { defaultTemplate, resolveFontPath } = require('./template');
@@ -54,19 +74,14 @@ const BTN_GAP = CLASSIC.button.gap;     // vertical gap between buttons
 const BORDER  = CLASSIC.button.border;  // border thickness in pixels
 
 // ── Text rendering constants ──────────────────────────────────────────────────
-// Font for drawtext (SIL Open Font License — Inter Regular).
+// Font for canvas text rendering (SIL Open Font License — Inter Regular).
 const FONT_PATH = resolveFontPath(CLASSIC.font.file);
 
-// RGB equivalents of the Classic fill palette entries — used for ffmpeg bg and pixel
+// RGB equivalents of the Classic fill palette entries — used for pixel
 // quantization. Derived from YCbCr in the template JSON.
 const ENTRY_RGB = {
   [CLASSIC.button.normalFill.entry]:   CLASSIC.button.normalFill.rgb,
   [CLASSIC.button.selectedFill.entry]: CLASSIC.button.selectedFill.rgb,
-};
-// Hex strings for ffmpeg color= filter
-const ENTRY_HEX = {
-  [CLASSIC.button.normalFill.entry]:   CLASSIC.button.normalFill.hex,
-  [CLASSIC.button.selectedFill.entry]: CLASSIC.button.selectedFill.hex,
 };
 
 /**
@@ -106,77 +121,83 @@ function _colorDist2(r1, g1, b1, r2, g2, b2) {
 }
 
 /**
- * Render a button bitmap with text label using ffmpeg drawtext.
- * Falls back to renderButtonPixels if ffmpeg or font is unavailable.
+ * Render a button bitmap with a centered text label using node-canvas.
+ *
+ * The label is drawn with the bundled MenuFont onto an off-screen canvas filled
+ * with the button's fill color; the raw RGBA pixels are read back and each is
+ * quantized to the nearest palette entry (text/border color vs fill color).
+ * Falls back to renderButtonPixels (solid blocks, no text) if the canvas module
+ * fails to load, the font is missing, the label is empty, or anything throws.
  *
  * @param {string} text       - button label text
  * @param {'normal'|'selected'|'activated'} state
  * @param {number} w          - button width in pixels
  * @param {number} h          - button height in pixels
- * @param {string} ffmpegPath - path to ffmpeg binary
  * @param {object} [style]    - render style (from styleFromTemplate); defaults to Classic
  * @returns {Uint8Array} palette-indexed pixel array (w*h bytes)
  */
-function renderButtonBitmap(text, state, w, h, ffmpegPath, style = DEFAULT_STYLE) {
+function renderButtonBitmap(text, state, w, h, style = DEFAULT_STYLE) {
   const fontPath = style.fontPath;
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || !fs.existsSync(fontPath) || !text) {
+  const canvasLib = _getCanvas();
+  if (!canvasLib || !fs.existsSync(fontPath) || !text) {
     return renderButtonPixels(w, h, state, style);
   }
 
-  const isNormal  = state === 'normal';
-  const fillEntry = isNormal ? style.normalEntry : style.selEntry;
-  const fillRGB   = isNormal ? style.normalRGB   : style.selRGB;
-  const bgHex     = isNormal ? style.normalHex   : style.selHex;
-  const border    = style.border;
-  const borderEntry = style.borderEntry;
-  const fontSize  = Math.round((h - border * 2) * style.fontSizeRatio);
-
-  // Escape characters that break ffmpeg filter syntax
-  const safeText = (text || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "’")    // curly apostrophe (avoids shell quoting issues)
-    .replace(/:/g, '\\:')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-
-  let rawData;
   try {
-    rawData = execFileSync(ffmpegPath, [
-      '-f', 'lavfi',
-      '-i', `color=c=0x${bgHex}:size=${w}x${h}:rate=1`,
-      '-frames:v', '1',
-      '-vf', `drawtext=fontfile=${fontPath}:text='${safeText}':fontsize=${fontSize}:fontcolor=${style.fontColor}:x=(w-tw)/2:y=(h-th)/2`,
-      '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-      'pipe:1',
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const { createCanvas, registerFont } = canvasLib;
+
+    // Register the font family once per font file (must precede createCanvas).
+    if (!_registeredFonts.has(fontPath)) {
+      registerFont(fontPath, { family: 'MenuFont' });
+      _registeredFonts.add(fontPath);
+    }
+
+    const isNormal  = state === 'normal';
+    const fillEntry = isNormal ? style.normalEntry : style.selEntry;
+    const fillRGB   = isNormal ? style.normalRGB   : style.selRGB;
+    const border      = style.border;
+    const borderEntry = style.borderEntry;
+    const fontSize  = Math.round((h - border * 2) * style.fontSizeRatio);
+
+    const canvas = createCanvas(w, h);
+    const ctx    = canvas.getContext('2d');
+
+    // Fill the canvas with the button fill color.
+    ctx.fillStyle = `rgb(${fillRGB[0]}, ${fillRGB[1]}, ${fillRGB[2]})`;
+    ctx.fillRect(0, 0, w, h);
+
+    // Draw the label centered both horizontally and vertically.
+    ctx.fillStyle    = style.fontColor;
+    ctx.font         = `${fontSize}px MenuFont`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2);
+
+    // Read back raw RGBA pixels and quantize to the nearest palette entry
+    // (text/border color vs fill color — anti-aliased edges snap to the closer).
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const WHITE = [255, 255, 255];
+    const pixels = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+      const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
+      const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
+      pixels[i] = dWhite <= dFill ? borderEntry : fillEntry;
+    }
+
+    // Overlay the border.
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (x < border || x >= w - border || y < border || y >= h - border) {
+          pixels[y * w + x] = borderEntry;
+        }
+      }
+    }
+
+    return pixels;
   } catch {
     return renderButtonPixels(w, h, state, style);
   }
-
-  if (!rawData || rawData.length < w * h * 3) {
-    return renderButtonPixels(w, h, state, style);
-  }
-
-  // Quantize RGB pixels to nearest palette entry (border/text entry vs fillEntry)
-  const WHITE = [255, 255, 255];
-  const pixels = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const r = rawData[i * 3], g = rawData[i * 3 + 1], b = rawData[i * 3 + 2];
-    const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
-    const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
-    pixels[i] = dWhite <= dFill ? borderEntry : fillEntry;
-  }
-
-  // Overlay the border
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (x < border || x >= w - border || y < border || y >= h - border) {
-        pixels[y * w + x] = borderEntry;
-      }
-    }
-  }
-
-  return pixels;
 }
 
 // IG stream PID: BD spec assigns 0x1400-0x141F to Interactive Graphics.
@@ -234,7 +255,7 @@ function renderButtonPixels(w, h, state, style = DEFAULT_STYLE) {
  * @param {number}   opts.pl2          - legacy: playlist for button 1 (ignored when playlists provided)
  * @param {number}   opts.pts          - PTS for the display set in 90kHz ticks (default 0)
  * @param {string[]} opts.labels       - button label text array
- * @param {string}   opts.ffmpegPath   - ffmpeg binary path for text rendering
+ * @param {string}   opts.ffmpegPath   - accepted for API compatibility; unused (text is rendered in-process via canvas)
  * @param {object}   opts.template     - menu template (look/geometry/palette); defaults to Classic
  * @returns {Buffer} TS-packetized IG PES stream (188-byte packets)
  */
@@ -264,9 +285,9 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
     const normalObjId = 2 * i;
     const selObjId    = 2 * i + 1;
     objects.push({ objectId: normalObjId, version: 0, width: btnW, height: btnH,
-                   pixels: renderButtonBitmap(label, 'normal',   btnW, btnH, ffmpegPath, style) });
+                   pixels: renderButtonBitmap(label, 'normal',   btnW, btnH, style) });
     objects.push({ objectId: selObjId,    version: 0, width: btnW, height: btnH,
-                   pixels: renderButtonBitmap(label, 'selected', btnW, btnH, ffmpegPath, style) });
+                   pixels: renderButtonBitmap(label, 'selected', btnW, btnH, style) });
 
     // One BOG per button, circular up/down navigation.
     // Button IDs are 1-based per BD spec (valid range [1, 0xEFFF]; 0 is reserved).
@@ -1114,15 +1135,15 @@ function _encodePng(rgb, w, h) {
  * Render a single menu button at a template's settings as a PNG — for the
  * template editor's preview pane. Mirrors exactly how the button is drawn on the
  * disc (same renderButtonBitmap/renderButtonPixels path and palette), so the
- * preview is faithful. Does not require ffmpeg (the PNG is encoded in-process);
- * passing ffmpegPath only affects text rendering, which currently falls back to
- * a solid fill when the bundled ffmpeg lacks drawtext.
+ * preview is faithful — including the real, canvas-rendered text label. The PNG
+ * itself is encoded in-process (no ffmpeg). ffmpegPath is accepted for API
+ * compatibility but unused.
  *
  * @param {object} opts
  * @param {object} opts.template   - validated template
  * @param {'normal'|'selected'} [opts.state] - button state to preview (default 'selected')
  * @param {string} [opts.label]    - button label (default 'Play Episode 1')
- * @param {string} [opts.ffmpegPath] - optional ffmpeg for text rendering
+ * @param {string} [opts.ffmpegPath] - accepted for API compatibility; unused
  * @returns {Buffer} PNG image of one button (template button width × height)
  */
 function renderButtonPreviewPng({ template, state = 'selected', label = 'Play Episode 1', ffmpegPath = null } = {}) {
@@ -1131,7 +1152,7 @@ function renderButtonPreviewPng({ template, state = 'selected', label = 'Play Ep
   }
   const style = styleFromTemplate(template);
   const w = style.w, h = style.h;
-  const idx = renderButtonBitmap(label, state, w, h, ffmpegPath, style);
+  const idx = renderButtonBitmap(label, state, w, h, style);
   const pal = {};
   for (const e of template.palette) pal[e.id] = _yuvToRgb(e.Y, e.Cr, e.Cb);
   const rgb = Buffer.alloc(w * h * 3);
@@ -1166,6 +1187,5 @@ module.exports = {
   BTN_W, BTN_H, BTN_GAP, BORDER,
   PALETTE,
   ENTRY_RGB,
-  ENTRY_HEX,
   FONT_PATH,
 };

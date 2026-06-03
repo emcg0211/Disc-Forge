@@ -1433,21 +1433,23 @@ console.log('\n=== 17: template data model (template.js) ===');
   assert(threw, 'loadTemplate throws on unknown id');
 }
 
-// ─── 18: byte-identity + Minimal/Theatrical through prod path (v1.13.0) ─────────
-console.log('\n=== 18: template byte-identity + Minimal/Theatrical encoder output ===');
+// ─── 18: v1.14.0 canvas-rendered golden + Minimal/Theatrical through prod path ──
+console.log('\n=== 18: v1.14.0 canvas-rendered golden + Minimal/Theatrical encoder output ===');
 {
   const crypto = require('crypto');
   const { buildMenuDisplaySet } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
   const { loadTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
 
-  // Golden hashes of the v1.12.0 production encoder output (no-ffmpeg deterministic
-  // path = the actual shipped output, since the bundled ffmpeg lacks drawtext and
-  // falls back to renderButtonPixels). Captured before the v1.13.0 template refactor.
+  // v1.14.0 canvas-rendered golden: hashes of the production encoder output with
+  // canvas-rendered button text (node-canvas draws the label, pixels quantized to
+  // palette). This replaced the v1.12.0 ffmpeg-drawtext path (the bundled ffmpeg
+  // lacked drawtext and fell back to solid renderButtonPixels). Canvas rendering is
+  // deterministic, so these hashes are stable across runs.
   const GOLDEN = {
-    1: 'ae0907b249ee9f6c5791f2e28248670b4344ff6c981e3f00b3f5c5b40278b133',
-    2: 'afc5bc7942601b0568e7b3bcd1dd36c7181b8e93fec936b1492ba481f18be62c',
-    3: '6832f2d45d128ce1b95dfac61068acc3e101e2d78017035cd0170bbc999fe9bf',
-    5: '4affbf4969330d6c193b83b1dc43774de01255c767bc7df54cca2ba14219cd5e',
+    1: '684fa38855cd8279c88b21b554cbdeeb29da358048c4bdf25fd51164bc75d63f',
+    2: 'f1d73aed946a49cc4ff1b12388d65adfae0a837e7330aa55dec7053880b50637',
+    3: 'b4e637b05120d06288ff0fff4af396c158030a000ceead39e98070a183232a83',
+    5: '46eee829aead8ec6ee143d754f2df996df4ae40524585fc33b04f5dbb58368aa',
   };
   const cfgs = [
     { playlists: [1],             pts: 54000000, labels: ['Episode 1'] },
@@ -1458,12 +1460,12 @@ console.log('\n=== 18: template byte-identity + Minimal/Theatrical encoder outpu
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
   for (const c of cfgs) {
     const N = c.playlists.length;
-    // Default (no template) must equal v1.12.0 golden.
+    // Default (no template) must equal v1.14.0 canvas-rendered golden.
     assertEq(sha(buildMenuDisplaySet(c)), GOLDEN[N],
-      `${N}-episode: default path byte-identical to v1.12.0 golden`);
+      `${N}-episode: default path byte-identical to v1.14.0 canvas-rendered golden`);
     // Explicit Classic template must also equal the golden.
     assertEq(sha(buildMenuDisplaySet({ ...c, template: loadTemplate('classic') })), GOLDEN[N],
-      `${N}-episode: explicit Classic template byte-identical to v1.12.0 golden`);
+      `${N}-episode: explicit Classic template byte-identical to v1.14.0 canvas-rendered golden`);
   }
 
   // Classic structural pre-flight (the v1.12.0 contract).
@@ -1503,6 +1505,63 @@ console.log('\n=== 18: template byte-identity + Minimal/Theatrical encoder outpu
   const dsM = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'], template: mi });
   const dsClassic2 = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['E1', 'E2'] });
   assert(Buffer.compare(dsM, dsClassic2) !== 0, 'Minimal: emitted IG differs from Classic (palette/geometry flows through)');
+}
+
+// ─── 19: canvas-rendered button text (v1.14.0) ─────────────────────────────────
+console.log('\n=== 19: canvas-rendered button text ===');
+{
+  const { renderButtonBitmap, renderButtonPixels, styleFromTemplate, buildMenuDisplaySet } =
+    require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+  const { loadTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
+
+  const style = styleFromTemplate();
+  const w = style.w, h = style.h;
+
+  const diffCount = (a, b) => {
+    let n = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++;
+    return n;
+  };
+
+  // A labeled button differs from the solid-fill fallback → text actually renders.
+  const labeled = renderButtonBitmap('Episode 1', 'normal', w, h, style);
+  const solid   = renderButtonPixels(w, h, 'normal', style);
+  assertEq(labeled.length, w * h, 'canvas: labeled bitmap is w*h palette indices');
+  assert(diffCount(labeled, solid) > 0,
+    'canvas: labeled button differs from renderButtonPixels (text is drawn)');
+
+  // Different labels produce different pixels → label content drives the output.
+  const aBtn = renderButtonBitmap('A', 'normal', w, h, style);
+  const bBtn = renderButtonBitmap('B', 'normal', w, h, style);
+  assert(diffCount(aBtn, bBtn) > 0, "canvas: label 'A' differs from label 'B'");
+
+  // Empty / null labels fall back gracefully (no throw) to the solid fill.
+  for (const empty of ['', null, undefined, '   ']) {
+    let res;
+    let threw = false;
+    try { res = renderButtonBitmap(empty, 'normal', w, h, style); } catch { threw = true; }
+    assert(!threw, `canvas: label ${JSON.stringify(empty)} does not throw`);
+    assertEq(res.length, w * h, `canvas: label ${JSON.stringify(empty)} returns a full bitmap`);
+  }
+  // An empty label specifically yields the solid fallback (nothing to draw).
+  assert(diffCount(renderButtonBitmap('', 'normal', w, h, style), solid) === 0,
+    'canvas: empty label == renderButtonPixels (graceful fallback)');
+
+  // The canvas renderer works for all three built-in templates.
+  for (const id of ['classic', 'minimal', 'theatrical']) {
+    const tpl = loadTemplate(id);
+    const st  = styleFromTemplate(tpl);
+    const px  = renderButtonBitmap('Play Episode 1', 'selected', st.w, st.h, st);
+    const fb  = renderButtonPixels(st.w, st.h, 'selected', st);
+    assertEq(px.length, st.w * st.h, `canvas: ${id} bitmap is w*h palette indices`);
+    assert(diffCount(px, fb) > 0, `canvas: ${id} renders visible text (differs from solid fill)`);
+    // Every emitted index is a valid palette entry id for the template.
+    const ids = new Set(tpl.palette.map(e => e.id));
+    assert(px.every(v => ids.has(v)), `canvas: ${id} all pixels map to a valid palette entry`);
+    // End-to-end: the full display set builds without error for this template.
+    const ds = buildMenuDisplaySet({ playlists: [1, 2], pts: 54000000, labels: ['Episode 1', 'Episode 2'], template: tpl });
+    assert(Buffer.isBuffer(ds) && ds.length > 0, `canvas: ${id} buildMenuDisplaySet produces a non-empty stream`);
+  }
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
