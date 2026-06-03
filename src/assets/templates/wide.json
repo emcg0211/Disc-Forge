@@ -1,9 +1,9 @@
 {
-  "id": "classic",
-  "name": "Classic",
-  "description": "The default Disc Forge menu: orange normal buttons, dark-blue selection, white border, on a near-black navy background. This is the v1.12.0 production look (S11 recipe, LG BP350 verified).",
+  "id": "wide",
+  "name": "Wide",
+  "description": "Wider, shorter buttons — good for long episode titles or many episodes. Classic orange/blue palette on a navy background.",
   "schemaVersion": 1,
-  "category": "Solid",
+  "category": "Wide Format",
   "palette": [
     { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
     { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
@@ -11,13 +11,13 @@
     { "id": 3, "Y": 45,  "Cr": 103, "Cb": 171, "T": 255 }
   ],
   "button": {
-    "width": 800,
-    "height": 90,
-    "gap": 30,
+    "width": 1600,
+    "height": 70,
+    "gap": 20,
     "border": 3,
     "borderEntry": 1,
-    "normalFill":   { "entry": 2, "rgb": [201, 100, 0],   "hex": "c96400" },
-    "selectedFill": { "entry": 3, "rgb": [0,   37,  120], "hex": "002578" }
+    "normalFill":   { "entry": 2, "rgb": [201, 100, 0], "hex": "c96400" },
+    "selectedFill": { "entry": 3, "rgb": [0,   37, 121], "hex": "002579" }
   },
   "font": {
     "file": "MenuFont.ttf",

@@ -1,0 +1,33 @@
+{
+  "id": "amber",
+  "name": "Amber",
+  "description": "A warm, light-on-dark menu on a deep brown background: honey-amber normal buttons that warm to cream when selected, with dark label text and a dark border. Cozy and editorial.",
+  "schemaVersion": 1,
+  "category": "Modern",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 220, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 130, "Cr": 145, "Cb": 95,  "T": 255 },
+    { "id": 3, "Y": 200, "Cr": 130, "Cb": 110, "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 3,
+    "borderEntry": 0,
+    "normalFill":   { "entry": 2, "rgb": [160, 132, 66],  "hex": "a08442" },
+    "selectedFill": { "entry": 3, "rgb": [217, 220, 178], "hex": "d9dcb2" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.55,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1a1000",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

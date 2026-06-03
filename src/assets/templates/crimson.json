@@ -1,0 +1,33 @@
+{
+  "id": "crimson",
+  "name": "Crimson",
+  "description": "A deep-red menu on a very dark red background: muted crimson normal buttons that flare to a brighter red when selected, white border. Bold and warm.",
+  "schemaVersion": 1,
+  "category": "Solid",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 60,  "Cr": 180, "Cb": 90,  "T": 255 },
+    { "id": 3, "Y": 100, "Cr": 190, "Cb": 80,  "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 3,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [134, 24, 0], "hex": "861800" },
+    "selectedFill": { "entry": 3, "rgb": [197, 66, 1], "hex": "c54201" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.55,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1a0000",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

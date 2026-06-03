@@ -1,0 +1,33 @@
+{
+  "id": "cinema",
+  "name": "Cinema",
+  "description": "Designed for an image background. Warm amber buttons on whatever background image you choose. Set background.imagePath to a 16:9 still.",
+  "schemaVersion": 1,
+  "category": "Wide Format",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 140, "Cr": 148, "Cb": 88,  "T": 255 },
+    { "id": 3, "Y": 190, "Cr": 143, "Cb": 82,  "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 3,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [176, 144, 64],  "hex": "b09040" },
+    "selectedFill": { "entry": 3, "rgb": [226, 208, 110], "hex": "e2d06e" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.60,
+    "color": "white"
+  },
+  "background": {
+    "type": "image",
+    "color": "0a0800",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

@@ -1381,8 +1381,11 @@ console.log('\n=== 17: template data model (template.js) ===');
   assertEq(classic.background.type, 'solid', 'Classic: background type = solid');
   assertEq(classic.background.color, '1a1a2e', 'Classic: background color = 1a1a2e (navy)');
 
-  // All three built-ins load + validate.
-  for (const id of ['classic', 'minimal', 'theatrical']) {
+  // All built-in templates load + validate (12 ship as of v1.14.1).
+  const store = require(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'));
+  const builtInIds = store.listBuiltIn().map(m => m.id);
+  assertEq(builtInIds.length, 12, 'exactly 12 built-in templates ship');
+  for (const id of builtInIds) {
     const t = loadTemplate(id);
     assertEq(t.id, id, `loadTemplate('${id}'): id round-trips`);
     assert(validateTemplate(t) === t, `validateTemplate('${id}'): returns the object (valid)`);
@@ -1391,6 +1394,8 @@ console.log('\n=== 17: template data model (template.js) ===');
     assert(ids.includes(t.button.normalFill.entry), `'${id}': normalFill.entry references a palette id`);
     assert(ids.includes(t.button.selectedFill.entry), `'${id}': selectedFill.entry references a palette id`);
     assert(ids.includes(t.button.borderEntry), `'${id}': borderEntry references a palette id`);
+    // Every built-in declares a non-empty category (used to group the Templates list).
+    assert(typeof t.category === 'string' && t.category.trim().length > 0, `'${id}': has a non-empty category`);
   }
   assertEq(loadTemplate('minimal').background.type, 'solid', 'Minimal: solid background');
   assertEq(loadTemplate('theatrical').background.type, 'image', 'Theatrical: image background');
@@ -1413,6 +1418,8 @@ console.log('\n=== 17: template data model (template.js) ===');
   }
   rejects(t => { delete t.id; }, 'missing id');
   rejects(t => { t.name = ''; }, 'empty name');
+  rejects(t => { delete t.category; }, 'missing category');
+  rejects(t => { t.category = '   '; }, 'empty/whitespace category');
   rejects(t => { t.palette = t.palette.slice(0, 3); }, 'palette length != 4');
   rejects(t => { t.palette[2].T = 0; }, 'transparent palette entry (T=0)');
   rejects(t => { t.palette[1].Y = 300; }, 'palette channel out of range');

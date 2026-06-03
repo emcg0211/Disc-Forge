@@ -63,7 +63,7 @@ function listBuiltIn() {
       const p = path.join(BUILTIN_DIR, f);
       try {
         const t = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return { id: t.id, name: t.name, path: p, readonly: true };
+        return { id: t.id, name: t.name, category: t.category || 'Other', path: p, readonly: true };
       } catch { return null; }
     })
     .filter(Boolean)

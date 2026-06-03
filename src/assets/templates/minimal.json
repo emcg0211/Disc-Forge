@@ -3,6 +3,7 @@
   "name": "Minimal",
   "description": "A flat, monochrome menu: dark-gray normal buttons that brighten to light-gray when selected, white border, on a near-black background. Quiet and modern.",
   "schemaVersion": 1,
+  "category": "Modern",
   "palette": [
     { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
     { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },

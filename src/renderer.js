@@ -1277,7 +1277,23 @@ function pageTemplates() {
   if (!t.loaded) {
     listHTML = `<div class="tpl-list-empty">Loading…</div>`;
   } else {
-    listHTML += `<div class="tpl-list-group">Built-in</div>` + t.builtIn.map(row).join('');
+    // Group built-in templates by category. Known categories appear in this
+    // order; any unrecognized category is appended alphabetically after them.
+    const CATEGORY_ORDER = ['Solid', 'Modern', 'Bold', 'Wide Format', 'Image Background'];
+    const byCat = {};
+    for (const m of t.builtIn) {
+      const cat = (m.category && m.category.trim()) ? m.category : 'Other';
+      (byCat[cat] = byCat[cat] || []).push(m);
+    }
+    const cats = [
+      ...CATEGORY_ORDER.filter(c => byCat[c]),
+      ...Object.keys(byCat).filter(c => !CATEGORY_ORDER.includes(c)).sort(),
+    ];
+    for (const cat of cats) {
+      const items = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
+      listHTML += `<div class="tpl-list-group">${esc(cat)}</div>` + items.map(row).join('');
+    }
+    // User/custom templates always live in a single group at the bottom.
     listHTML += `<div class="tpl-list-group">Custom</div>`;
     listHTML += t.user.length ? t.user.map(row).join('') : `<div class="tpl-list-empty">No custom templates yet</div>`;
   }

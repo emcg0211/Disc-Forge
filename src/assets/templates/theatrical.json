@@ -3,6 +3,7 @@
   "name": "Theatrical",
   "description": "A cinematic menu designed for a background image: amber normal buttons that warm to bright gold when selected, white border. background.type is 'image' — set background.imagePath to a 16:9 still (or any image; it is fitted to 1920x1080). With no image set, it falls back to the solid color.",
   "schemaVersion": 1,
+  "category": "Image Background",
   "palette": [
     { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
     { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },

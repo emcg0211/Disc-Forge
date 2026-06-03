@@ -1,0 +1,33 @@
+{
+  "id": "midnight",
+  "name": "Midnight",
+  "description": "A cool, understated menu on a near-black background with a blue hint: slate normal buttons that lift to ice blue when selected, white border, thin 2px edge. Quiet and modern.",
+  "schemaVersion": 1,
+  "category": "Modern",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 90,  "Cr": 120, "Cb": 150, "T": 255 },
+    { "id": 3, "Y": 180, "Cr": 110, "Cb": 180, "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 2,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [73, 84, 131],   "hex": "495483" },
+    "selectedFill": { "entry": 3, "rgb": [162, 185, 255], "hex": "a2b9ff" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.55,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "0a0a0f",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

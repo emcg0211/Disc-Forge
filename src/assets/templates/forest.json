@@ -1,0 +1,33 @@
+{
+  "id": "forest",
+  "name": "Forest",
+  "description": "A natural green menu on a very dark green background: muted forest-green normal buttons that brighten to vivid green when selected, white border. Calm and organic.",
+  "schemaVersion": 1,
+  "category": "Solid",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 80,  "Cr": 100, "Cb": 60,  "T": 255 },
+    { "id": 3, "Y": 150, "Cr": 80,  "Cb": 50,  "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 3,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [30, 124, 0], "hex": "1e7c00" },
+    "selectedFill": { "entry": 3, "rgb": [79, 225, 0], "hex": "4fe100" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.55,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "001a00",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

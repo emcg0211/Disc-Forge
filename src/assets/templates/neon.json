@@ -1,0 +1,33 @@
+{
+  "id": "neon",
+  "name": "Neon",
+  "description": "A high-contrast menu on pure black: hot-pink normal buttons that switch to electric cyan when selected, white border, thin 2px edge. Loud and graphic.",
+  "schemaVersion": 1,
+  "category": "Bold",
+  "palette": [
+    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
+    { "id": 2, "Y": 80,  "Cr": 195, "Cb": 110, "T": 255 },
+    { "id": 3, "Y": 160, "Cr": 70,  "Cb": 195, "T": 255 }
+  ],
+  "button": {
+    "width": 800,
+    "height": 90,
+    "gap": 30,
+    "border": 2,
+    "borderEntry": 1,
+    "normalFill":   { "entry": 2, "rgb": [181, 27, 38],  "hex": "b51b26" },
+    "selectedFill": { "entry": 3, "rgb": [75, 189, 255], "hex": "4bbdff" }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.55,
+    "color": "white"
+  },
+  "background": {
+    "type": "solid",
+    "color": "000000",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

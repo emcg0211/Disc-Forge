@@ -14,6 +14,7 @@
  * Schema (schemaVersion 1):
  *   {
  *     id, name, description, schemaVersion,
+ *     category,                                // group label for the Templates UI
  *     palette: [ {id,Y,Cr,Cb,T} × 4 ],        // YCbCr-601; T=255=opaque
  *     button: {
  *       width, height, gap, border,           // pixels
@@ -70,6 +71,7 @@ function validateTemplate(obj) {
   if (!obj || typeof obj !== 'object') E('not an object');
   if (typeof obj.id !== 'string'   || !obj.id.trim())   E('id must be a non-empty string');
   if (typeof obj.name !== 'string' || !obj.name.trim()) E('name must be a non-empty string');
+  if (typeof obj.category !== 'string' || !obj.category.trim()) E('category must be a non-empty string');
 
   // ── palette: exactly 4 entries, ids 0..3, channels 0-255, all opaque ──
   if (!Array.isArray(obj.palette) || obj.palette.length !== 4) {

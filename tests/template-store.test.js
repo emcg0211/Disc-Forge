@@ -32,7 +32,12 @@ console.log('\n=== 1: listBuiltIn ===');
 {
   const bi = store.listBuiltIn();
   const ids = bi.map(t => t.id).sort();
-  assert(JSON.stringify(ids) === '["classic","minimal","theatrical"]', 'listBuiltIn: classic/minimal/theatrical');
+  assert(ids.length === 12, 'listBuiltIn: 12 built-in templates');
+  for (const id of ['classic', 'minimal', 'theatrical']) {
+    assert(ids.includes(id), `listBuiltIn: includes ${id}`);
+  }
+  assert(bi.every(t => typeof t.category === 'string' && t.category.trim().length > 0),
+    'listBuiltIn: every entry carries a non-empty category');
   assert(bi.every(t => t.readonly === true), 'listBuiltIn: all readonly');
   assert(bi.every(t => fs.existsSync(t.path)), 'listBuiltIn: paths exist');
   assert(store.isBuiltInId('classic'), 'isBuiltInId(classic) = true');
