@@ -114,8 +114,9 @@ let state = {
     draft: null,        // working copy (object) of the selected template
     baseline: null,     // pristine copy for Revert / dirty detection
     error: null,        // validateTemplate error surfaced inline
-    previews: {},       // { normal: dataURL, selected: dataURL } for selectedId
+    previews: {},       // { menu, normal, selected: dataURL } for selectedId
     previewKey: null,   // hash of the draft the previews were rendered from
+    menuRendering: false, // true while the full-screen menu preview is in flight
     advancedPalette: false,
     busy: false,
     nameModal: null,    // {mode:'duplicate'|'saveAs', value} — name-entry modal (Electron lacks window.prompt)
@@ -964,11 +965,39 @@ async function refreshPreviews() {
     window.discForge.templatePreviewButton({ template: tpl, state: 'selected', label: 'Play Episode 1' }),
     window.discForge.templatePreviewButton({ template: tpl, state: 'normal',   label: 'Play Episode 2' }),
   ]);
+  // Keep any prior full-screen menu image while the heavier render re-runs.
   ed.previews = {
+    ...ed.previews,
     selected: (selR && selR.ok) ? selR.pngBase64 : null,
     normal:   (norR && norR.ok) ? norR.pngBase64 : null,
   };
   if (selR && !selR.ok) ed.error = selR.error;
+  render();
+  // The full-screen menu scene is heavier — render it on its own 400ms debounce.
+  scheduleMenuPreview();
+}
+
+// The full-screen 1920×1080 menu preview is more expensive than the button PNGs
+// (whole-frame canvas + 3 button bitmaps), so it gets a longer 400ms debounce
+// and a "Rendering…" caption while in flight. A sequence guard drops stale
+// results so the last edit always wins.
+let _menuTimer = null;
+let _menuSeq = 0;
+function scheduleMenuPreview() {
+  clearTimeout(_menuTimer);
+  state.templateEditor.menuRendering = true;
+  render();  // caption flips to "Rendering…"
+  _menuTimer = setTimeout(renderMenuPreview, 400);
+}
+async function renderMenuPreview() {
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl || ed.error) { ed.menuRendering = false; render(); return; }
+  const seq = ++_menuSeq;
+  const r = await window.discForge.templatePreviewMenu({ template: tpl });
+  if (seq !== _menuSeq) return;  // a newer render started — drop this stale result
+  ed.menuRendering = false;
+  ed.previews = { ...ed.previews, menu: (r && r.ok) ? r.pngBase64 : null };
   render();
 }
 
@@ -1099,17 +1128,32 @@ function _entryRoles(tpl, id) {
   return roles.join(', ');
 }
 
-// Live preview pane: Normal + Selected button PNGs, or a validation error banner.
+// Live preview pane: a full-screen 16:9 menu scene (what the TV shows), with the
+// isolated Normal/Selected button PNGs available as a collapsible detail below.
+// On a validation error, the pane shows the error banner instead.
 function previewHTML() {
   const ed = state.templateEditor;
   if (ed.error) return `<div class="tpl-error">⚠ ${esc(ed.error)}</div>`;
-  const img = (src, label) => `<div class="tpl-preview-col">
+  const menu = ed.previews.menu;
+  const caption = ed.menuRendering
+    ? 'Rendering…'
+    : (menu ? 'Preview — 3 sample buttons, center of 1920×1080 frame'
+            : 'Full-screen preview unavailable — see button states below');
+  const btn = (src, label) => `<div class="tpl-preview-col">
       <span class="tpl-preview-label">${label}</span>
-      ${src ? `<img class="tpl-preview-img" src="${src}" alt="${label} button preview">`
-            : `<div class="tpl-preview-img" style="width:240px;height:48px"></div>`}
+      ${src ? `<img class="tpl-preview-img tpl-preview-img-sm" src="${src}" alt="${label} button preview">`
+            : `<div class="tpl-preview-img tpl-preview-img-sm" style="width:200px;height:40px"></div>`}
     </div>`;
   return `<div class="field"><label class="field-label">Preview</label>
-    <div class="tpl-preview-row">${img(ed.previews.normal, 'Normal')}${img(ed.previews.selected, 'Selected')}</div></div>`;
+    <div class="tpl-menu-preview-wrap">
+      ${menu ? `<img src="${menu}" alt="Full menu preview">` : ''}
+    </div>
+    <div class="tpl-menu-preview-caption">${esc(caption)}</div>
+    <details class="tpl-btn-detail">
+      <summary>Button states</summary>
+      <div class="tpl-preview-row">${btn(ed.previews.normal, 'Normal')}${btn(ed.previews.selected, 'Selected')}</div>
+    </details>
+  </div>`;
 }
 
 // "white" / "#rrggbb" → "#rrggbb" for a color <input>.

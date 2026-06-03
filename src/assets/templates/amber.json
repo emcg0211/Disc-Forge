@@ -1,32 +1,72 @@
 {
   "id": "amber",
   "name": "Amber",
-  "description": "A warm, light-on-dark menu on a deep brown background: honey-amber normal buttons that warm to cream when selected, with dark label text and a dark border. Cozy and editorial.",
+  "description": "Warm editorial: a deep amber button glows to bright warm gold when selected, framed in near-white on a very dark brown ground. Feels like candlelight.",
   "schemaVersion": 1,
   "category": "Modern",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 220, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 130, "Cr": 145, "Cb": 95,  "T": 255 },
-    { "id": 3, "Y": 200, "Cr": 130, "Cb": 110, "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 220,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 110,
+      "Cr": 148,
+      "Cb": 88,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 185,
+      "Cr": 143,
+      "Cb": 78,
+      "T": 255
+    }
   ],
   "button": {
-    "width": 800,
-    "height": 90,
-    "gap": 30,
-    "border": 3,
-    "borderEntry": 0,
-    "normalFill":   { "entry": 2, "rgb": [160, 132, 66],  "hex": "a08442" },
-    "selectedFill": { "entry": 3, "rgb": [217, 220, 178], "hex": "d9dcb2" }
+    "width": 760,
+    "height": 86,
+    "gap": 24,
+    "border": 2,
+    "borderEntry": 1,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        141,
+        109,
+        29
+      ],
+      "hex": "8d6d1d"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        221,
+        204,
+        96
+      ],
+      "hex": "ddcc60"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.5,
     "color": "white"
   },
   "background": {
     "type": "solid",
-    "color": "1a1000",
+    "color": "120a00",
     "imagePath": null,
     "fit": "cover"
   }

@@ -1,27 +1,67 @@
 {
   "id": "neon",
   "name": "Neon",
-  "description": "A high-contrast menu on pure black: hot-pink normal buttons that switch to electric cyan when selected, white border, thin 2px edge. Loud and graphic.",
+  "description": "Full synthwave: a hot magenta button flips to electric cyan when selected, thin white border, on pure black. Very bright, very loud.",
   "schemaVersion": 1,
   "category": "Bold",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 80,  "Cr": 195, "Cb": 110, "T": 255 },
-    { "id": 3, "Y": 160, "Cr": 70,  "Cb": 195, "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 70,
+      "Cr": 200,
+      "Cb": 105,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 150,
+      "Cr": 65,
+      "Cb": 200,
+      "T": 255
+    }
   ],
   "button": {
     "width": 800,
-    "height": 90,
-    "gap": 30,
+    "height": 82,
+    "gap": 20,
     "border": 2,
     "borderEntry": 1,
-    "normalFill":   { "entry": 2, "rgb": [181, 27, 38],  "hex": "b51b26" },
-    "selectedFill": { "entry": 3, "rgb": [75, 189, 255], "hex": "4bbdff" }
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        178,
+        13,
+        16
+      ],
+      "hex": "b20d10"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        55,
+        179,
+        255
+      ],
+      "hex": "37b3ff"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.5,
     "color": "white"
   },
   "background": {

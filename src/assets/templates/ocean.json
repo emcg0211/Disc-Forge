@@ -1,32 +1,72 @@
 {
   "id": "ocean",
   "name": "Ocean",
-  "description": "A cool aquatic menu on a very dark teal background: muted teal normal buttons that brighten to bright aqua when selected, white border. Crisp and calm.",
+  "description": "Deep ocean: a dark teal button brightens to crisp cyan when selected, white border, on a near-black teal ground. Crisp and vivid.",
   "schemaVersion": 1,
   "category": "Solid",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 80,  "Cr": 110, "Cb": 170, "T": 255 },
-    { "id": 3, "Y": 160, "Cr": 80,  "Cb": 190, "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 60,
+      "Cr": 105,
+      "Cb": 175,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 160,
+      "Cr": 75,
+      "Cb": 200,
+      "T": 255
+    }
   ],
   "button": {
-    "width": 800,
+    "width": 820,
     "height": 90,
-    "gap": 30,
-    "border": 3,
+    "gap": 28,
+    "border": 2,
     "borderEntry": 1,
-    "normalFill":   { "entry": 2, "rgb": [46, 73, 159],  "hex": "2e499f" },
-    "selectedFill": { "entry": 3, "rgb": [91, 182, 255], "hex": "5bb6ff" }
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        15,
+        52,
+        146
+      ],
+      "hex": "0f3492"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        83,
+        183,
+        255
+      ],
+      "hex": "53b7ff"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.52,
     "color": "white"
   },
   "background": {
     "type": "solid",
-    "color": "001520",
+    "color": "001018",
     "imagePath": null,
     "fit": "cover"
   }

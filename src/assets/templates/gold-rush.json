@@ -1,32 +1,72 @@
 {
   "id": "gold-rush",
   "name": "Gold Rush",
-  "description": "A rich metallic menu on a warm near-black background: deep-gold normal buttons that gleam to bright gold when selected, with dark label text and a dark border. Luxe and warm.",
+  "description": "Vault gold: an antique-gold button burnishes to bright gold when selected, floating on pure black with a dark frame. Metallic and rich.",
   "schemaVersion": 1,
   "category": "Bold",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 140, "Cr": 140, "Cb": 80,  "T": 255 },
-    { "id": 3, "Y": 200, "Cr": 135, "Cb": 75,  "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 130,
+      "Cr": 143,
+      "Cb": 78,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 210,
+      "Cr": 138,
+      "Cb": 72,
+      "T": 255
+    }
   ],
   "button": {
     "width": 800,
-    "height": 90,
-    "gap": 30,
+    "height": 88,
+    "gap": 28,
     "border": 3,
     "borderEntry": 0,
-    "normalFill":   { "entry": 2, "rgb": [163, 153, 47],  "hex": "a3992f" },
-    "selectedFill": { "entry": 3, "rgb": [225, 229, 107], "hex": "e1e56b" }
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        157,
+        140,
+        32
+      ],
+      "hex": "9d8c20"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        242,
+        240,
+        113
+      ],
+      "hex": "f2f071"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.5,
     "color": "white"
   },
   "background": {
     "type": "solid",
-    "color": "0a0800",
+    "color": "000000",
     "imagePath": null,
     "fit": "cover"
   }

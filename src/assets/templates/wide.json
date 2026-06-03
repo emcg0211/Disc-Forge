@@ -1,27 +1,67 @@
 {
   "id": "wide",
   "name": "Wide",
-  "description": "Wider, shorter buttons — good for long episode titles or many episodes. Classic orange/blue palette on a navy background.",
+  "description": "Letterbox premium: the Classic palette in wider, shorter buttons — good for long episode titles. Feels like a widescreen credit roll.",
   "schemaVersion": 1,
   "category": "Wide Format",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 112, "Cr": 184, "Cb": 42,  "T": 255 },
-    { "id": 3, "Y": 45,  "Cr": 103, "Cb": 171, "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 112,
+      "Cr": 184,
+      "Cb": 42,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 45,
+      "Cr": 103,
+      "Cb": 171,
+      "T": 255
+    }
   ],
   "button": {
-    "width": 1600,
-    "height": 70,
-    "gap": 20,
-    "border": 3,
+    "width": 1400,
+    "height": 65,
+    "gap": 18,
+    "border": 2,
     "borderEntry": 1,
-    "normalFill":   { "entry": 2, "rgb": [201, 100, 0], "hex": "c96400" },
-    "selectedFill": { "entry": 3, "rgb": [0,   37, 121], "hex": "002579" }
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        201,
+        100,
+        0
+      ],
+      "hex": "c96400"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        0,
+        37,
+        121
+      ],
+      "hex": "002579"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.5,
     "color": "white"
   },
   "background": {

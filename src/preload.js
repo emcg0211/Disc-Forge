@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('discForge', {
   templateDuplicate: (id, newName)      => ipcRenderer.invoke('template-duplicate', { id, newName }),
   templateDelete:    (id)               => ipcRenderer.invoke('template-delete', id),
   templatePreviewButton: (opts)         => ipcRenderer.invoke('template-preview-button', opts),
+  templatePreviewMenu:   (opts)         => ipcRenderer.invoke('template-preview-menu', opts),
 
   // Build events
   onBuildProgress:    (cb) => ipcRenderer.on('build-progress',  (_, d) => cb(d)),

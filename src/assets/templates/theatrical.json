@@ -1,27 +1,67 @@
 {
   "id": "theatrical",
   "name": "Theatrical",
-  "description": "A cinematic menu designed for a background image: amber normal buttons that warm to bright gold when selected, white border. background.type is 'image' — set background.imagePath to a 16:9 still (or any image; it is fitted to 1920x1080). With no image set, it falls back to the solid color.",
+  "description": "A cinematic menu designed for a background image: a deep amber button warms to bright gold when selected, white border. Set background.imagePath to a 16:9 still; with none set it falls back to the solid color.",
   "schemaVersion": 1,
   "category": "Image Background",
   "palette": [
-    { "id": 0, "Y": 16,  "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 1, "Y": 235, "Cr": 128, "Cb": 128, "T": 255 },
-    { "id": 2, "Y": 140, "Cr": 150, "Cb": 90,  "T": 255 },
-    { "id": 3, "Y": 180, "Cr": 146, "Cb": 80,  "T": 255 }
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 100,
+      "Cr": 152,
+      "Cb": 84,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 195,
+      "Cr": 147,
+      "Cb": 76,
+      "T": 255
+    }
   ],
   "button": {
     "width": 820,
-    "height": 96,
-    "gap": 34,
+    "height": 90,
+    "gap": 28,
     "border": 3,
     "borderEntry": 1,
-    "normalFill":   { "entry": 2, "rgb": [179, 141, 68], "hex": "b38d44" },
-    "selectedFill": { "entry": 3, "rgb": [220, 195, 94], "hex": "dcc35e" }
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        136,
+        95,
+        9
+      ],
+      "hex": "885f09"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        239,
+        213,
+        103
+      ],
+      "hex": "efd567"
+    }
   },
   "font": {
     "file": "MenuFont.ttf",
-    "sizeRatio": 0.55,
+    "sizeRatio": 0.56,
     "color": "white"
   },
   "background": {

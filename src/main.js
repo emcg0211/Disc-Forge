@@ -3609,6 +3609,80 @@ ipcMain.handle('template-preview-button', async (_, { id, template, state = 'sel
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// ── template-preview-menu ─────────────────────────────────────────────────────
+// Render a full 1920×1080 menu scene (background + 3 sample buttons) as a PNG
+// data URI, so the Templates tab can show what the disc menu actually looks like
+// on a TV — not just isolated button crops. Mirrors the disc render path: same
+// background (image-cover or solid color), same renderButtonBitmap + palette as
+// buildMenuDisplaySet. Returns null on any failure (canvas missing, bad image,
+// etc.) so the UI degrades to the button PNGs instead of crashing.
+ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
+  try {
+    const store = require('./lib/template-store');
+    const { renderButtonBitmap, styleFromTemplate } = require('./lib/menu-builder');
+    const { yuvToRgb } = require('./lib/color');
+    const tpl = template || store.loadById(id);
+
+    let canvasLib;
+    try { canvasLib = require('canvas'); } catch { return null; }
+    const { createCanvas, loadImage } = canvasLib;
+
+    const FW = 1920, FH = 1080;
+    const canvas = createCanvas(FW, FH);
+    const ctx = canvas.getContext('2d');
+
+    // Background: a real image file (drawn to cover) wins; else the solid color.
+    const bg = tpl.background || {};
+    let drewImage = false;
+    if (bg.type === 'image' && bg.imagePath && fs.existsSync(bg.imagePath)) {
+      try {
+        const img = await loadImage(bg.imagePath);
+        const scale = Math.max(FW / img.width, FH / img.height);
+        const dw = img.width * scale, dh = img.height * scale;
+        ctx.drawImage(img, (FW - dw) / 2, (FH - dh) / 2, dw, dh);
+        drewImage = true;
+      } catch { /* fall through to solid fill */ }
+    }
+    if (!drewImage) {
+      const hex = bg.color && /^#/.test(bg.color) ? bg.color : `#${bg.color || '000000'}`;
+      ctx.fillStyle = hex;
+      ctx.fillRect(0, 0, FW, FH);
+    }
+
+    // Palette index → RGB (YCbCr-601), same source of truth as the encoder.
+    const pal = {};
+    for (const e of tpl.palette) pal[e.id] = yuvToRgb(e.Y, e.Cr, e.Cb);
+
+    // 3 sample buttons, center-stacked — button 1 is the selected (focused) one.
+    const style = styleFromTemplate(tpl);
+    const w = style.w, h = style.h, gap = style.gap;
+    const samples = [
+      { label: 'Play Movie',       state: 'normal'   },
+      { label: 'Scene Selection',  state: 'selected' },
+      { label: 'Special Features', state: 'normal'   },
+    ];
+    const totalH = 3 * h + 2 * gap;
+    const startY = Math.round((FH - totalH) / 2);
+    const startX = Math.round((FW - w) / 2);
+
+    samples.forEach((s, i) => {
+      const idx = renderButtonBitmap(s.label, s.state, w, h, style);
+      const imgData = ctx.createImageData(w, h);
+      const d = imgData.data;
+      for (let p = 0; p < w * h; p++) {
+        const c = pal[idx[p]] || [0, 0, 0];
+        d[p * 4] = c[0]; d[p * 4 + 1] = c[1]; d[p * 4 + 2] = c[2]; d[p * 4 + 3] = 255;
+      }
+      ctx.putImageData(imgData, startX, startY + i * (h + gap));
+    });
+
+    const png = canvas.toBuffer('image/png');
+    return { ok: true, pngBase64: `data:image/png;base64,${png.toString('base64')}` };
+  } catch (e) {
+    return null;
+  }
+});
+
 // ── addMenuToDisc ─────────────────────────────────────────────────────────────
 // Creates a 2-button IG interactive menu at playlist slot 99 (00099.mpls/.clpi/.m2ts).
 // Patches MovieObject obj[2] to boot to the menu (PLAY_PL(99)) instead of EP1 directly.

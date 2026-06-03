@@ -1334,6 +1334,46 @@ body.light-mode .tab-count { background: rgba(160,120,32,0.1) !important; color:
   max-width: 360px; height: auto; border-radius: 4px; border: 1px solid var(--border-mid);
   background: repeating-conic-gradient(#888 0% 25%, #aaa 0% 50%) 50% / 16px 16px;
 }
+.tpl-preview-img-sm { max-width: 220px; }
+
+/* Full-screen menu preview — a 16:9 "TV screen" of the actual disc menu. */
+.tpl-menu-preview-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 0 0 3px #222, 0 8px 32px rgba(0,0,0,0.7);
+  margin-bottom: 12px;
+}
+.tpl-menu-preview-wrap img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+}
+/* Subtle scanline overlay — gives a slight CRT/TV feel */
+.tpl-menu-preview-wrap::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px, transparent 3px,
+    rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px
+  );
+  pointer-events: none;
+}
+.tpl-menu-preview-caption {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-align: center;
+  margin-bottom: 10px;
+  letter-spacing: 0.05em;
+}
+.tpl-btn-detail { margin-bottom: 6px; }
+.tpl-btn-detail > summary {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-tertiary); cursor: pointer; padding: 2px 0; user-select: none;
+}
+.tpl-btn-detail[open] > summary { margin-bottom: 6px; }
 .tpl-pal-edit { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
 .tpl-pal-edit input[type=color] { width: 34px; height: 26px; border: none; border-radius: 4px; padding: 1px; background: none; cursor: pointer; }
 .tpl-yuv { display: flex; gap: 6px; }
