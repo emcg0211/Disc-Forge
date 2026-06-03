@@ -10,7 +10,7 @@ exports.default = async function afterPack(context) {
     return;
   }
 
-  const binaries = ['ffmpeg', 'ffprobe', 'tsMuxeR'];
+  const binaries = ['ffmpeg', 'ffprobe', 'tsMuxeR', 'mkvmerge', 'xorriso'];
   for (const bin of binaries) {
     const binPath = path.join(binDir, bin);
     if (fs.existsSync(binPath)) {

@@ -5,10 +5,13 @@ node_modules/
 dist/
 out/
 
-# Bundled binaries (too large for git — see README for download links)
+# Bundled binaries (too large for git — regenerate with scripts/setup-binaries.sh)
 bin/ffmpeg
 bin/ffprobe
 bin/tsMuxeR
+bin/mkvmerge
+bin/xorriso
+bin/lib/
 
 # macOS
 .DS_Store
@@ -28,3 +31,5 @@ ts/
 .idea/
 *.zip
 tools/__pycache__/
+reference_clannad/BDMV/STREAM/00005.m2ts
+reference_clannad/ig_extract.bin
