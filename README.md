@@ -11,10 +11,22 @@ Disc Forge turns MKV files into fully-compliant BD-ROM ISOs with proper navigati
 
 ## Download
 
-**[Disc Forge for Apple Silicon (arm64)](https://github.com/emcg0211/Disc-Forge/releases/latest)** — macOS 12+, unsigned. After installing, clear Gatekeeper quarantine with:
-```
-xattr -cr "/Applications/Disc Forge.app"
-```
+**[Disc Forge for Apple Silicon (arm64)](https://github.com/emcg0211/Disc-Forge/releases/latest)** — macOS 12+
+
+> ⚠️ **"Disc Forge is damaged and can't be opened"** — this is normal. The app is unsigned (no Apple Developer certificate). macOS blocks it by default. Fix it with one Terminal command:
+>
+> ```
+> xattr -cr "/Applications/Disc Forge.app"
+> ```
+>
+> Then try opening it again. This is a one-time step.
+
+**Installation steps:**
+1. Download the `.dmg` from the link above
+2. Open the `.dmg` and drag Disc Forge to Applications
+3. Try to open it — macOS will say it's damaged
+4. Open Terminal and run the `xattr` command above
+5. Open Disc Forge — it works now
 
 ---
 
