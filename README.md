@@ -6,6 +6,16 @@ Disc Forge turns MKV files into fully-compliant BD-ROM ISOs with proper navigati
 
 > Built by one person, for people who care about their physical media collection.
 
+[![Download](https://img.shields.io/github/v/release/emcg0211/Disc-Forge?label=Download&style=for-the-badge&logo=apple&color=0a84ff)](https://github.com/emcg0211/Disc-Forge/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey?style=for-the-badge&logo=apple)](https://github.com/emcg0211/Disc-Forge/releases/latest)
+
+## Download
+
+**[Disc Forge for Apple Silicon (arm64)](https://github.com/emcg0211/Disc-Forge/releases/latest)** — macOS 12+, unsigned. After installing, clear Gatekeeper quarantine with:
+```
+xattr -cr "/Applications/Disc Forge.app"
+```
+
 ---
 
 ## Features
