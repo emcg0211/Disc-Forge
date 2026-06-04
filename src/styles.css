@@ -1292,6 +1292,21 @@ body.light-mode .tab-count { background: rgba(160,120,32,0.1) !important; color:
 .tcb-builtin { color: #7ab8f5; background: var(--blue-dim); }
 .tcb-custom  { color: #5de08a; background: var(--green-dim); }
 
+/* ── v1.19.0 Menu switcher (Main Menu / Chapter Select) ───────────────────── */
+.menu-switcher {
+  display: flex; gap: 6px; margin-bottom: 12px; justify-content: center;
+}
+.menu-switch-btn {
+  padding: 6px 16px; font-size: 12px; border-radius: var(--radius-md);
+  border: 1px solid var(--border-mid); background: var(--bg-overlay);
+  color: var(--text-secondary); cursor: pointer; font-family: var(--font-ui);
+  transition: all var(--t-fast);
+}
+.menu-switch-btn.active {
+  background: var(--gold-glow); color: var(--gold-bright);
+  border-color: var(--gold-dim); font-weight: 600;
+}
+
 /* ── Cinematic TV bezel preview ──────────────────────────────────────────── */
 .tv-assembly { max-width: 720px; margin: 0 auto 4px; }
 .tv-bezel {

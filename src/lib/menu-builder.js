@@ -526,6 +526,179 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
   });
 }
 
+// ── Chapter selection sub-menu (v1.19.0) ─────────────────────────────────────────
+// A second IG menu screen: one button per chapter mark plus a "Main Menu" back
+// button. It reuses the exact S11-proven encoder contract used by
+// buildMenuDisplaySet (2 ODS per button, no WDS, defaultSelectedButtonIdRef
+// highlight, frame_rate_code=2, epoch_start, InMux stream_model). Only the button
+// layout and the navigation commands differ from the episode menu.
+//
+// HARDWARE STATUS: the disc-pipeline integration (a second m2ts/mpls/clpi clip,
+// two MovieObjects, and the cross-clip JumpObject transitions) is NOT part of this
+// change — see the v1.19.0 PR notes. These functions are the verifiable building
+// blocks (byte-deterministic, unit-tested); end-to-end hardware navigation is
+// pending and unverified.
+
+/**
+ * 2-column grid layout for chapter buttons (used for 7+ chapters). The grid is
+ * centered on the frame; row-major fill (button i → column i%2, row floor(i/2)).
+ *
+ * @param {number} count - number of chapter buttons
+ * @param {number} bw    - button width
+ * @param {number} bh    - button height
+ * @param {number} gap   - gap between buttons (both axes)
+ * @param {number} [fw=1920] - frame width
+ * @param {number} [fh=1080] - frame height
+ * @returns {{x:number,y:number}[]}
+ */
+function computeChapterGridPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
+  const cols = 2;
+  const rows = Math.ceil(count / cols);
+  const totalW = cols * bw + (cols - 1) * gap;
+  const totalH = rows * bh + (rows - 1) * gap;
+  const startX = Math.round((fw - totalW) / 2);
+  const startY = Math.round((fh - totalH) / 2);
+  return Array.from({ length: count }, (_, i) => ({
+    x: startX + (i % cols) * (bw + gap),
+    y: startY + Math.floor(i / cols) * (bh + gap),
+  }));
+}
+
+/**
+ * Resolve the chapter-menu button set: positions, labels, and nav commands.
+ * Chapter buttons (≤6 → vertical stack via computeAutoPositions; 7+ → 2-column
+ * grid) seek the main video to chapter i via PLAY_PL_MARK(mainPlaylistId, i). A
+ * trailing "Main Menu" back button (centered, below all chapters with an extra
+ * gap) jumps back to the main-menu MovieObject via JUMP_OBJECT(mainMenuObjectId).
+ * All positions are clamped to the frame, matching buildMenuDisplaySet.
+ *
+ * @param {Array<{name?:string,time?:string,startTime?:number}>} chapters
+ * @param {object}  [opts]
+ * @param {object}  [opts.template]           - validated template (geometry source)
+ * @param {number}  [opts.mainPlaylistId=1]   - playlist id of the main video (00001.mpls → 1)
+ * @param {number}  [opts.mainMenuObjectId=0] - MovieObject id of the main menu (back target)
+ * @param {string}  [opts.backLabel='Main Menu']
+ * @param {number}  [opts.videoWidth=1920]
+ * @param {number}  [opts.videoHeight=1080]
+ * @returns {{positions:{x,y}[], labels:string[], navCmds:Buffer[][], backIndex:number}}
+ */
+function buildChapterMenuButtons(chapters = [], opts = {}) {
+  const {
+    template = CLASSIC, mainPlaylistId = 1, mainMenuObjectId = 0,
+    backLabel = 'Main Menu', videoWidth = 1920, videoHeight = 1080,
+  } = opts;
+  const style = styleFromTemplate(template || CLASSIC);
+  const bw = style.w, bh = style.h, gap = style.gap;
+  const n = chapters.length;
+
+  // ≤6 chapters → vertical stack (same as the episode menu auto-layout);
+  // 7+ → 2-column grid. Both are centered on the frame.
+  const chapPos = n <= 6
+    ? computeAutoPositions(n, bw, bh, gap, videoWidth, videoHeight)
+    : computeChapterGridPositions(n, bw, bh, gap, videoWidth, videoHeight);
+
+  // Back button sits below the lowest chapter button, centered, with a 2× gap.
+  const lowestY = chapPos.reduce((m, p) => Math.max(m, p.y), 0);
+  const backPos = { x: Math.round((videoWidth - bw) / 2), y: lowestY + bh + gap * 2 };
+
+  const clamp = (p) => ({
+    x: Math.max(0, Math.min(Math.round(p.x), videoWidth  - bw)),
+    y: Math.max(0, Math.min(Math.round(p.y), videoHeight - bh)),
+  });
+  const positions = [...chapPos, backPos].map(clamp);
+
+  const labels = [
+    ...chapters.map((c, i) => (c && c.name && c.name.trim()) ? c.name.trim() : `Chapter ${i + 1}`),
+    backLabel,
+  ];
+
+  const navCmds = [
+    // chapter i → seek main video to mark i (0-indexed, matches the MPLS mark order)
+    ...chapters.map((_, i) => [buildNavCmd('PLAY_PL_MARK', mainPlaylistId, i)]),
+    // back → return to the main-menu MovieObject (JumpObject, no call-stack push)
+    [buildNavCmd('JUMP_OBJECT', mainMenuObjectId)],
+  ];
+
+  return { positions, labels, navCmds, backIndex: n };
+}
+
+/**
+ * Build the complete chapter-selection IG display set (one button per chapter +
+ * a "Main Menu" back button). Encoder contract is identical to buildMenuDisplaySet
+ * (the S11 visible-normal-state model); only layout + nav commands differ.
+ *
+ * @param {object}  opts
+ * @param {Array}   opts.chapters             - project.chapters array
+ * @param {object}  [opts.template]           - menu template (defaults to Classic)
+ * @param {number}  [opts.pts=0]              - ICS PTS in 90kHz ticks
+ * @param {number}  [opts.mainPlaylistId=1]   - main video playlist id (00001.mpls → 1)
+ * @param {number}  [opts.mainMenuObjectId=0] - back-button JumpObject target
+ * @param {string}  [opts.backLabel='Main Menu']
+ * @param {number}  [opts.videoWidth=1920]
+ * @param {number}  [opts.videoHeight=1080]
+ * @returns {Buffer} TS-packetized IG PES stream
+ */
+function buildChapterMenuDisplaySet({ chapters = [], template = null, pts = 0, mainPlaylistId = 1, mainMenuObjectId = 0, backLabel = 'Main Menu', videoWidth = 1920, videoHeight = 1080 } = {}) {
+  const tpl   = template || CLASSIC;
+  const style = styleFromTemplate(tpl);
+  const btnW  = style.w;
+  const btnH  = style.h;
+
+  const { positions, labels, navCmds } = buildChapterMenuButtons(chapters, {
+    template: tpl, mainPlaylistId, mainMenuObjectId, backLabel, videoWidth, videoHeight,
+  });
+  const N = positions.length;
+
+  // Spatial navigation (UP/DOWN/LEFT/RIGHT) recomputed from the resolved layout —
+  // identical algorithm to the episode menu so the grid navigates naturally.
+  const nav = computeSpatialNavigation(positions, btnW, btnH);
+
+  // Visible normal-state model (S11): TWO bitmaps per button (normal + selected).
+  const objects = [];
+  const bogs = [];
+  for (let i = 0; i < N; i++) {
+    const normalObjId = 2 * i;
+    const selObjId    = 2 * i + 1;
+    objects.push({ objectId: normalObjId, version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(labels[i], 'normal',   btnW, btnH, style) });
+    objects.push({ objectId: selObjId,    version: 0, width: btnW, height: btnH,
+                   pixels: renderButtonBitmap(labels[i], 'selected', btnW, btnH, style) });
+    bogs.push({
+      defaultValidButtonIdRef: i + 1,
+      buttons: [{
+        id: i + 1, numericSelectValue: i + 1, autoActionFlag: false,
+        x: positions[i].x, y: positions[i].y,
+        upperBtnId: nav[i].up, lowerBtnId: nav[i].down, leftBtnId: nav[i].left, rightBtnId: nav[i].right,
+        normalStartObjId: normalObjId, normalEndObjId: normalObjId, normalRepeat: false,
+        selectedSoundId: 0xFF,
+        selStartObjId: selObjId, selEndObjId: selObjId, selRepeat: false,
+        activatedSoundId: 0xFF,
+        actStartObjId: selObjId, actEndObjId: selObjId,
+        navCmds: navCmds[i] || [],
+      }],
+    });
+  }
+
+  return buildIGDisplaySet({
+    composition: {
+      videoWidth, videoHeight,
+      frameRate: 0x20, compositionNumber: 0, compositionState: 2,
+      streamModel: false, uiModel: false, userTimeoutMs: 0,
+      pages: [{
+        id: 0, version: 0, uoMask: Buffer.alloc(8),
+        animationFrameRateCode: 0,
+        defaultSelectedButtonIdRef: 1, defaultActivatedButtonIdRef: 0xFFFF,
+        paletteIdRef: 0, bogs,
+      }],
+    },
+    palette: { paletteId: 0, version: 0, entries: tpl.palette },
+    windows: null,
+    objects,
+    pid: IG_PID,
+    pts,
+  });
+}
+
 /**
  * Extract the first video PES PTS from a BD m2ts buffer.
  *
@@ -1347,6 +1520,9 @@ function renderButtonPreviewPng({ template, state = 'selected', label = 'Play Ep
 
 module.exports = {
   buildMenuDisplaySet,
+  buildChapterMenuDisplaySet,
+  buildChapterMenuButtons,
+  computeChapterGridPositions,
   generateMenuVideo,
   validateBackgroundImage,
   renderButtonPreviewPng,

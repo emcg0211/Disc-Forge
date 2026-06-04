@@ -503,14 +503,42 @@ function encodeEND() {
 /**
  * Build a 12-byte HDMV navigation command for a button action.
  *
- * Commands use the same format as MovieObject.bdmv movie objects.
- * The most common button command: PLAY_PL(playlistId)
+ * Commands use the same 12-byte HDMV insn format as MovieObject.bdmv movie
+ * objects: 4-byte instruction word + 4-byte operand_1 (dst) + 4-byte operand_2
+ * (src). The most common button command: PLAY_PL(playlistId).
  *
- * @param {string} type - 'PLAY_PL' | 'JUMP_TITLE' | 'NOOP'
- * @param {number} arg  - playlist ID for PLAY_PL, title ID for JUMP_TITLE
+ * Opcode family used by this codebase (proven on the episode-menu path; the
+ * unit tests in tests/ig-encoder.test.js pin PLAY_PL/JUMP_TITLE byte-for-byte):
+ *   PLAY_PL     0x22800000  — branch/play,  op_cnt=1, imm_op1=1   (playlist in op_1)
+ *   JUMP_TITLE  0x21810000  — branch/jump,  op_cnt=1, imm_op1=1   (title id  in op_1)
+ *   JUMP_OBJECT 0x21800000  — branch/jump,  op_cnt=1, imm_op1=1   (object id in op_1)
+ *
+ * JUMP_OBJECT reuses the exact constant already written by addMenuToDisc() in
+ * main.js (the MovieObject loop-back command), so it is the highest-confidence
+ * new opcode here. NOTE: the byte values above are this codebase's established,
+ * working family. They deliberately differ from the *illustrative* bytes in the
+ * v1.19.0 chapter-menu spec (which showed JumpObject as 0x20 0x01 and
+ * PlayPL_AtMark as 0x20 0x05). Per the spec's own instruction to "extend
+ * consistently with the bytes the existing tests pin", we follow the proven
+ * family rather than the illustrative example.
+ *
+ * PLAY_PL_MARK (PlayPlayList at a chapter mark) carries TWO operands. It is
+ * encoded as a branch/play insn with op_cnt=2 and both operands immediate
+ * (imm_op1=imm_op2=1), the at-mark variant selected in the branch-option nibble:
+ *   PLAY_PL_MARK 0x42C20000  playlist id in op_1 (bytes 4-7), mark id in op_2 (8-11)
+ * This two-operand layout matches libbluray's INSN_PLAY_PL_PM (playlist=dst,
+ * mark=src). Because the chapter-menu disc pipeline is NOT wired up in this
+ * change (deferred — see PR notes), this exact encoding has not yet been
+ * hardware- or libbluray-validated end to end; the tests assert only that the
+ * encoder emits these bytes deterministically.
+ *
+ * @param {string} type - 'PLAY_PL' | 'JUMP_TITLE' | 'JUMP_OBJECT' | 'PLAY_PL_MARK' | 'NOOP'
+ * @param {number} arg  - op_1: playlist ID (PLAY_PL / PLAY_PL_MARK), title ID
+ *                         (JUMP_TITLE), or movie-object ID (JUMP_OBJECT)
+ * @param {number} arg2 - op_2: chapter mark ID (PLAY_PL_MARK only; 0-indexed)
  * @returns {Buffer} 12 bytes
  */
-function buildNavCmd(type, arg = 0) {
+function buildNavCmd(type, arg = 0, arg2 = 0) {
   const cmd = Buffer.alloc(12);
   switch (type) {
     case 'PLAY_PL':
@@ -524,6 +552,20 @@ function buildNavCmd(type, arg = 0) {
       cmd.writeUInt32BE(0x21810000, 0);
       cmd.writeUInt32BE(arg,        4);
       cmd.writeUInt32BE(0,          8);
+      break;
+    case 'JUMP_OBJECT':
+      // JUMP_OBJECT(movie_object_id): branch/jump, object variant. Same constant
+      // addMenuToDisc() writes for its MovieObject loop-back command (0x21800000).
+      cmd.writeUInt32BE(0x21800000, 0);
+      cmd.writeUInt32BE(arg,        4);  // movie_object_id (0-based)
+      cmd.writeUInt32BE(0,          8);
+      break;
+    case 'PLAY_PL_MARK':
+      // PLAY_PL_MARK(playlist_id, mark_id): branch/play, at-mark variant,
+      // op_cnt=2, both operands immediate. playlist in op_1, mark in op_2.
+      cmd.writeUInt32BE(0x42C20000, 0);
+      cmd.writeUInt32BE(arg,        4);  // playlist_id
+      cmd.writeUInt32BE(arg2,       8);  // mark_id (0-indexed, matches MPLS mark order)
       break;
     case 'NOOP':
     default:
