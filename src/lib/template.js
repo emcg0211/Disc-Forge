@@ -19,6 +19,8 @@
  *     button: {
  *       width, height, gap, border,           // pixels
  *       borderEntry,                           // palette id for the border
+ *       shape,                                 // 'rect'|'rounded'|'pill' (optional, default 'rect')
+ *       cornerRadius,                          // px 4-60, used only when shape==='rounded' (optional)
  *       normalFill:   { entry, rgb:[r,g,b], hex },
  *       selectedFill: { entry, rgb:[r,g,b], hex }
  *     },
@@ -94,6 +96,15 @@ function validateTemplate(obj) {
   if (!_isInt(b.gap,    0, 1080)) E('button.gap must be 0-1080');
   if (!_isInt(b.border, 0, Math.floor(Math.min(b.width, b.height) / 2))) {
     E('button.border must be a non-negative integer smaller than half the button size');
+  }
+  // ── button shape (optional; defaults to 'rect') ──
+  // 'rect' (axis-aligned), 'rounded' (cornerRadius px), 'pill' (radius = half height).
+  if (b.shape !== undefined && !['rect', 'rounded', 'pill'].includes(b.shape)) {
+    E("button.shape must be one of 'rect'/'rounded'/'pill'");
+  }
+  // cornerRadius only applies to 'rounded'; ignored for rect/pill. Optional.
+  if (b.cornerRadius !== undefined && !_isInt(b.cornerRadius, 4, 60)) {
+    E('button.cornerRadius must be an integer 4-60');
   }
   const paletteIds = obj.palette.map(e => e.id);
   if (!paletteIds.includes(b.borderEntry)) E('button.borderEntry must reference a palette id');

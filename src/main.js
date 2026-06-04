@@ -274,6 +274,23 @@ app.whenReady().then(() => {
   });
 });
 
+// Enumerate installed system fonts once per app session. The first call shells
+// out to the platform font tool (via font-list); the deduped, sorted result is
+// cached so the picker in the Menus editor can show the full list cheaply.
+let _systemFontsCache = null;
+ipcMain.handle('get-system-fonts', async () => {
+  if (_systemFontsCache) return _systemFontsCache;
+  try {
+    const fontList = require('font-list');
+    const fonts = await fontList.getFonts({ disableQuoting: true });
+    _systemFontsCache = [...new Set(fonts)].sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    sendLog('[fonts] enumeration failed: ' + e.message);
+    _systemFontsCache = [];
+  }
+  return _systemFontsCache;
+});
+
 ipcMain.handle('check-tools', async () => ({
   ffmpeg:   { found: !!TOOLS.ffmpeg,    path: TOOLS.ffmpeg,   install: TOOL_INSTALL.ffmpeg   },
   ffprobe:  { found: !!TOOLS.ffprobe,   path: TOOLS.ffprobe,  install: TOOL_INSTALL.ffprobe  },

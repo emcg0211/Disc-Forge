@@ -170,15 +170,12 @@ async function boot() {
   setState({ tools, appVersion, project: { ...state.project, outputDir } });
   ensureMenuFont();  // warm the menu-preview font (non-blocking)
 
-  // Load installed system fonts
+  // Load installed system fonts (enumerated once in the main process via font-list).
+  // availableFonts() falls back to SAFE_FONTS when this comes back empty.
   try {
-    if (window.queryLocalFonts) {
-      const fonts = await window.queryLocalFonts();
-      const unique = [...new Set(fonts.map(f => f.family))].sort();
-      state.systemFonts = unique;
-    }
+    const fonts = await window.discForge.getSystemFonts();
+    state.systemFonts = Array.isArray(fonts) ? fonts : [];
   } catch(e) {
-    // queryLocalFonts not available or permission denied - use defaults
     state.systemFonts = [];
   }
   loadTemplates();  // v1.13.0 — populate the Templates tab + build-flow dropdown
@@ -607,20 +604,52 @@ function _fillCss(tpl, fill) {
   return e ? _yuvCss(e) : '#888';
 }
 
+// Trace a button outline (rounded-rect / pill / rect) — mirrors menu-builder's
+// _buttonShapePath so the client preview matches the disc render.
+function _btnShapePath(ctx, x, y, w, h, shape, cornerRadius) {
+  const r = shape === 'pill' ? Math.min(h / 2, w / 2)
+          : shape === 'rounded' ? Math.max(0, Math.min(cornerRadius || 16, Math.min(w, h) / 2))
+          : 0;
+  ctx.beginPath();
+  if (r === 0) { ctx.rect(x, y, w, h); return; }
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
 // Draw one button (fill + border + centered label) at (x,y) on ctx.
 function drawTemplateButton(ctx, tpl, fill, label, x, y) {
   const b = tpl.button;
   const w = b.width, h = b.height, border = b.border || 0;
+  const shape = (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect';
   const be = tpl.palette.find(e => e.id === b.borderEntry) || tpl.palette[1] || tpl.palette[0];
   const beCss = _yuvCss(be);
   ctx.fillStyle = _fillCss(tpl, fill);
-  ctx.fillRect(x, y, w, h);
-  if (border > 0) {  // 4 inset bars so the thickness matches the disc
-    ctx.fillStyle = beCss;
-    ctx.fillRect(x, y, w, border);
-    ctx.fillRect(x, y + h - border, w, border);
-    ctx.fillRect(x, y, border, h);
-    ctx.fillRect(x + w - border, y, border, h);
+  if (shape === 'rect') {
+    ctx.fillRect(x, y, w, h);
+    if (border > 0) {  // 4 inset bars so the thickness matches the disc
+      ctx.fillStyle = beCss;
+      ctx.fillRect(x, y, w, border);
+      ctx.fillRect(x, y + h - border, w, border);
+      ctx.fillRect(x, y, border, h);
+      ctx.fillRect(x + w - border, y, border, h);
+    }
+  } else {
+    _btnShapePath(ctx, x, y, w, h, shape, b.cornerRadius);
+    ctx.fill();
+    if (border > 0) {  // stroke the same outline, inset so it stays inside the shape
+      ctx.strokeStyle = beCss;
+      ctx.lineWidth = border;
+      _btnShapePath(ctx, x + border / 2, y + border / 2, w - border, h - border, shape, b.cornerRadius);
+      ctx.stroke();
+    }
   }
   // On the disc, white label text quantises to the border/text entry — use it here.
   const fontSize = Math.max(1, Math.round((h - border * 2) * ((tpl.font && tpl.font.sizeRatio) || 0.5)));
@@ -1150,11 +1179,26 @@ function templateEditorHTML(tpl) {
       </div>`}`;
 
   // SECTION B — Buttons
+  const shape = (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect';
+  const cornerR = Number.isInteger(b.cornerRadius) ? b.cornerRadius : 24;
+  const shapeSeg = (val, icon, label) =>
+    `<button class="tpl-shape-btn ${shape === val ? 'on' : ''}" data-shape="${val}">
+      <span class="tpl-shape-icon">${icon}</span>${label}
+    </button>`;
   const btnSection = `
     <div class="tpl-sub-label">Colors</div>
     ${swatchRowHTML('tpl-normal-color', 'Normal', palHex(b.normalFill.entry))}
     ${swatchRowHTML('tpl-sel-color', 'Selected', palHex(b.selectedFill.entry))}
     ${swatchRowHTML('tpl-border-color', 'Border / text', palHex(b.borderEntry))}
+    <div class="tpl-sub-label">Shape</div>
+    <div class="tpl-shape-seg">
+      ${shapeSeg('rect', '▭', 'Rectangle')}
+      ${shapeSeg('rounded', '▢', 'Rounded')}
+      ${shapeSeg('pill', '⬭', 'Pill')}
+    </div>
+    ${shape === 'rounded'
+      ? sliderRowHTML('tpl-corner-radius', 'Corner radius', 4, 60, 2, cornerR, cornerR + 'px')
+      : ''}
     <div class="tpl-sub-label">Size &amp; spacing</div>
     ${sliderRowHTML('tpl-w', 'Width', 200, 1600, 10, b.width, b.width + 'px')}
     ${sliderRowHTML('tpl-h', 'Height', 40, 200, 2, b.height, b.height + 'px')}
@@ -2260,6 +2304,19 @@ function attachListeners() {
   _btnSlider('tpl-h', 'height', 40, 200);
   _btnSlider('tpl-gap', 'gap', 10, 80);
   _btnSlider('tpl-border', 'border', 0, 12);
+
+  // Button shape (segmented control + conditional corner-radius slider)
+  document.querySelectorAll('[data-shape]').forEach(el =>
+    el.addEventListener('click', () => updateDraft(t => {
+      t.button.shape = el.dataset.shape;
+      // Seed a sensible radius when first switching to Rounded so the disc render
+      // matches the slider's displayed default (24px).
+      if (t.button.shape === 'rounded' && !Number.isInteger(t.button.cornerRadius)) {
+        t.button.cornerRadius = 24;
+      }
+    })));
+  document.getElementById('tpl-corner-radius')?.addEventListener('input', e =>
+    updateDraft(t => { t.button.cornerRadius = parseInt(e.target.value, 10); }));
 
   // SECTION C — Typography
   document.getElementById('tpl-font-search')?.addEventListener('input', e => {

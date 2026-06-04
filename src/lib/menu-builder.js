@@ -49,6 +49,42 @@ function _getCanvas() {
 const { buildNavCmd, buildIGDisplaySet, encodePDS, encodeODS, encodeWDS, encodeICS, encodeEND, encodeRLE, wrapInPES, buildSegment, SEG } = require('./ig-encoder');
 const { defaultTemplate, resolveFontPath } = require('./template');
 
+// ── Button shape geometry ───────────────────────────────────────────────────────
+// Compute the corner radius for a button shape. 'pill' rounds to a full half-pill;
+// 'rounded' uses cornerRadius (default 16) clamped to half the shorter side; any
+// other value ('rect' or undefined) returns 0 (a true rectangle).
+function _shapeRadius(shape, w, h, cornerRadius) {
+  if (shape === 'pill')    return Math.min(h / 2, w / 2);
+  if (shape === 'rounded') return Math.max(0, Math.min(cornerRadius || 16, Math.min(w, h) / 2));
+  return 0;
+}
+
+// Trace a button outline (rounded-rect / pill / rect) as the current canvas path.
+function _buttonShapePath(ctx, x, y, w, h, shape, cornerRadius) {
+  const r = _shapeRadius(shape, w, h, cornerRadius);
+  ctx.beginPath();
+  if (r === 0) { ctx.rect(x, y, w, h); return; }
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Fill a button shape. For 'rect' (radius 0) this is a plain fillRect — identical
+// to the v1.16.0 fill, so rectangular templates stay byte-for-byte unchanged.
+function _drawButtonShape(ctx, x, y, w, h, shape, cornerRadius) {
+  const r = _shapeRadius(shape, w, h, cornerRadius);
+  if (r === 0) { ctx.fillRect(x, y, w, h); return; }
+  _buttonShapePath(ctx, x, y, w, h, shape, cornerRadius);
+  ctx.fill();
+}
+
 // ── Template-derived defaults ───────────────────────────────────────────────────
 // All look-and-feel values (palette, geometry, font, fill colors, background) now
 // live in templates (src/assets/templates/*.json — see src/lib/template.js). The
@@ -107,6 +143,9 @@ function styleFromTemplate(tpl = CLASSIC) {
     selRGB:       b.selectedFill.rgb,
     normalHex:    b.normalFill.hex,
     selHex:       b.selectedFill.hex,
+    // Shape: 'rect' (default) | 'rounded' | 'pill'. Absent → 'rect' (v1.16.0 look).
+    shape:        (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect',
+    cornerRadius: b.cornerRadius,
     fontPath:     resolveFontPath(tpl.font.file),
     fontSizeRatio: tpl.font.sizeRatio,
     fontColor:    tpl.font.color,
@@ -158,13 +197,17 @@ function renderButtonBitmap(text, state, w, h, style = DEFAULT_STYLE) {
     const border      = style.border;
     const borderEntry = style.borderEntry;
     const fontSize  = Math.round((h - border * 2) * style.fontSizeRatio);
+    // 'rect' (default) draws byte-for-byte as v1.16.0; 'rounded'/'pill' clip the fill.
+    const shape = (style.shape === 'rounded' || style.shape === 'pill') ? style.shape : 'rect';
 
     const canvas = createCanvas(w, h);
     const ctx    = canvas.getContext('2d');
 
-    // Fill the canvas with the button fill color.
+    // Fill the button shape. For 'rect' this fills the whole canvas (identical to
+    // v1.16.0); for rounded/pill the corners are left transparent so they fall back
+    // to the background palette entry below.
     ctx.fillStyle = `rgb(${fillRGB[0]}, ${fillRGB[1]}, ${fillRGB[2]})`;
-    ctx.fillRect(0, 0, w, h);
+    _drawButtonShape(ctx, 0, 0, w, h, shape, style.cornerRadius);
 
     // Draw the label centered both horizontally and vertically.
     ctx.fillStyle    = style.fontColor;
@@ -173,23 +216,38 @@ function renderButtonBitmap(text, state, w, h, style = DEFAULT_STYLE) {
     ctx.textBaseline = 'middle';
     ctx.fillText(text, w / 2, h / 2);
 
+    // For rounded/pill, draw the border by stroking the same outline (inset so it
+    // stays inside the shape) in the label color — it quantizes to borderEntry just
+    // like the text. Rect keeps the v1.16.0 pixel-overlay border further below.
+    if (border > 0 && shape !== 'rect') {
+      ctx.strokeStyle = style.fontColor;
+      ctx.lineWidth   = border;
+      _buttonShapePath(ctx, border / 2, border / 2, w - border, h - border, shape, style.cornerRadius);
+      ctx.stroke();
+    }
+
     // Read back raw RGBA pixels and quantize to the nearest palette entry
     // (text/border color vs fill color — anti-aliased edges snap to the closer).
+    // Outside the shape (rounded/pill corners) the pixel is transparent → it maps to
+    // the background palette entry (id 0), which is what the disc shows there too.
     const data = ctx.getImageData(0, 0, w, h).data;
     const WHITE = [255, 255, 255];
     const pixels = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
+      if (shape !== 'rect' && data[i * 4 + 3] < 128) { pixels[i] = 0; continue; }
       const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
       const dWhite = _colorDist2(r, g, b, WHITE[0], WHITE[1], WHITE[2]);
       const dFill  = _colorDist2(r, g, b, fillRGB[0], fillRGB[1], fillRGB[2]);
       pixels[i] = dWhite <= dFill ? borderEntry : fillEntry;
     }
 
-    // Overlay the border.
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (x < border || x >= w - border || y < border || y >= h - border) {
-          pixels[y * w + x] = borderEntry;
+    // Overlay the rectangular border (rect only — rounded/pill stroked it above).
+    if (shape === 'rect') {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (x < border || x >= w - border || y < border || y >= h - border) {
+            pixels[y * w + x] = borderEntry;
+          }
         }
       }
     }

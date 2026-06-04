@@ -1,6 +1,6 @@
 {
   "name": "disc-forge",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "description": "Professional Blu-ray Authoring Studio for macOS",
   "main": "src/main.js",
   "author": "Disc Forge",
@@ -97,6 +97,7 @@
     "afterPack": "scripts/afterPack.js"
   },
   "dependencies": {
-    "canvas": "^3.2.3"
+    "canvas": "^3.2.3",
+    "font-list": "^2.1.0"
   }
 }

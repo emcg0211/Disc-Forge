@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('discForge', {
   getAppVersion:    ()        => ipcRenderer.invoke('app-version'),
   getImageDataUrl:  (fp)      => ipcRenderer.invoke('image-data-url', fp),
   getHomeDir:       ()        => ipcRenderer.invoke('get-home-dir'),
+  getSystemFonts:   ()        => ipcRenderer.invoke('get-system-fonts'),
   checkTools:       ()        => ipcRenderer.invoke('check-tools'),
   openFileDialog:   (opts)    => ipcRenderer.invoke('open-file-dialog', opts),
   openFilesDialog:  (opts)    => ipcRenderer.invoke('open-files-dialog', opts),
