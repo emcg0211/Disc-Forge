@@ -85,6 +85,116 @@ function _drawButtonShape(ctx, x, y, w, h, shape, cornerRadius) {
   ctx.fill();
 }
 
+// ── Button layout + spatial navigation (v1.18.0) ─────────────────────────────────
+/**
+ * Compute default button positions — centered horizontally, stacked vertically
+ * from the vertical midpoint of the frame, matching the v1.17 auto-layout exactly.
+ * This is the single source of truth for the auto layout, shared by the disc
+ * encoder (buildMenuDisplaySet) and the renderer's preview (which mirrors it).
+ *
+ * @param {number} count     — number of buttons
+ * @param {number} bw        — button width (px)
+ * @param {number} bh        — button height (px)
+ * @param {number} gap       — gap between buttons (px)
+ * @param {number} [fw=1920] — frame width
+ * @param {number} [fh=1080] — frame height
+ * @returns {{ x: number, y: number }[]}
+ */
+function computeAutoPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
+  const totalH = count * bh + (count - 1) * gap;
+  const startY = Math.round((fh - totalH) / 2);
+  const startX = Math.round((fw - bw) / 2);
+  return Array.from({ length: count }, (_, i) => ({
+    x: startX,
+    y: startY + i * (bh + gap),
+  }));
+}
+
+/**
+ * Compute spatial navigation neighbours for a set of button positions.
+ * Returns an array of { up, down, left, right } with 1-based button IDs,
+ * matching the BD IG convention (button IDs start at 1).
+ *
+ * Algorithm: for each direction, find the nearest button in that half-plane
+ * using a weighted distance that strongly prefers axially aligned neighbours.
+ * If no button exists in a given half-plane, wrap to the furthest button in the
+ * OPPOSITE half-plane (DVD-Studio-Pro-style wrap). When the opposite half-plane
+ * is also empty (e.g. LEFT/RIGHT in a perfectly stacked column, where every
+ * button shares the same x), there is genuinely nowhere to go and the neighbour
+ * falls back to the button itself — which is exactly what the v1.17 hardcoded
+ * column navigation did, so the auto-layout path stays byte-identical.
+ *
+ * @param {{ x: number, y: number }[]} positions  — top-left of each button
+ * @param {number} bw — button width
+ * @param {number} bh — button height
+ * @returns {{ up: number, down: number, left: number, right: number }[]}
+ */
+function computeSpatialNavigation(positions, bw, bh) {
+  const n = positions.length;
+  if (n === 0) return [];
+  if (n === 1) return [{ up: 1, down: 1, left: 1, right: 1 }];
+
+  const centers = positions.map(p => ({
+    cx: p.x + bw / 2,
+    cy: p.y + bh / 2,
+  }));
+
+  const AXIS_PENALTY = 3.0;
+
+  // Nearest button in a half-plane, weighting cross-axis distance heavily so an
+  // axially aligned neighbour wins over a diagonal one.
+  function nearest(fromIdx, filterFn, primaryAxis) {
+    const { cx: fx, cy: fy } = centers[fromIdx];
+    let best = -1, bestDist = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (j === fromIdx) continue;
+      if (!filterFn(centers[j], fx, fy)) continue;
+      const { cx: jx, cy: jy } = centers[j];
+      const dx = jx - fx, dy = jy - fy;
+      const axisDist  = primaryAxis === 'y' ? Math.abs(dy) : Math.abs(dx);
+      const crossDist = primaryAxis === 'y' ? Math.abs(dx) : Math.abs(dy);
+      const dist = Math.sqrt((crossDist * AXIS_PENALTY) ** 2 + axisDist ** 2);
+      if (dist < bestDist) { bestDist = dist; best = j; }
+    }
+    return best;
+  }
+
+  // Furthest button in the OPPOSITE half-plane (the wrap target). Constrained to
+  // the strict opposite half so a pure column has no left/right wrap target.
+  function wrapIdx(fromIdx, wrapAxis, wrapDir) {
+    const { cx: fx, cy: fy } = centers[fromIdx];
+    let best = -1, bestVal = -Infinity;
+    for (let j = 0; j < n; j++) {
+      if (j === fromIdx) continue;
+      const coord = wrapAxis === 'y' ? centers[j].cy : centers[j].cx;
+      const from  = wrapAxis === 'y' ? fy : fx;
+      const inHalf = wrapDir === 'max' ? coord > from : coord < from;
+      if (!inHalf) continue;
+      const val = wrapDir === 'max' ? coord : -coord;
+      if (val > bestVal) { bestVal = val; best = j; }
+    }
+    return best;
+  }
+
+  return centers.map((_, i) => {
+    const upIdx    = nearest(i, (c, fx, fy) => c.cy < fy, 'y');
+    const up       = upIdx    >= 0 ? upIdx    : wrapIdx(i, 'y', 'max');
+    const downIdx  = nearest(i, (c, fx, fy) => c.cy > fy, 'y');
+    const down     = downIdx  >= 0 ? downIdx  : wrapIdx(i, 'y', 'min');
+    const leftIdx  = nearest(i, (c, fx, fy) => c.cx < fx, 'x');
+    const left     = leftIdx  >= 0 ? leftIdx  : wrapIdx(i, 'x', 'max');
+    const rightIdx = nearest(i, (c, fx, fy) => c.cx > fx, 'x');
+    const right    = rightIdx >= 0 ? rightIdx : wrapIdx(i, 'x', 'min');
+
+    return {
+      up:    (up    >= 0 ? up    : i) + 1,
+      down:  (down  >= 0 ? down  : i) + 1,
+      left:  (left  >= 0 ? left  : i) + 1,
+      right: (right >= 0 ? right : i) + 1,
+    };
+  });
+}
+
 // ── Template-derived defaults ───────────────────────────────────────────────────
 // All look-and-feel values (palette, geometry, font, fill colors, background) now
 // live in templates (src/assets/templates/*.json — see src/lib/template.js). The
@@ -328,11 +438,25 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
   const btnH  = style.h;
   const btnGap = style.gap;
 
-  // Auto-layout: center all buttons vertically, left-align buttons horizontally
-  const totalH = N * btnH + (N - 1) * btnGap;
-  const topY   = Math.round((videoHeight - totalH) / 2);
-  const btnX   = Math.round((videoWidth  - btnW)  / 2);
-  const btnY   = Array.from({ length: N }, (_, i) => topY + i * (btnH + btnGap));
+  // Resolve button positions. A template may carry button.positions[] (the
+  // v1.18.0 layout editor's output) — each non-null {x,y} overrides the auto
+  // layout for that button index; absent/null entries fall back to the auto
+  // layout. With no positions at all this is byte-identical to v1.17.
+  const autoPos = computeAutoPositions(N, btnW, btnH, btnGap, videoWidth, videoHeight);
+  const stored  = (tpl.button && Array.isArray(tpl.button.positions)) ? tpl.button.positions : null;
+  const positions = autoPos.map((a, i) => {
+    const p = (stored && stored[i] && stored[i].x != null) ? stored[i] : a;
+    return {
+      x: Math.max(0, Math.min(Math.round(p.x), videoWidth  - btnW)),
+      y: Math.max(0, Math.min(Math.round(p.y), videoHeight - btnH)),
+    };
+  });
+
+  // Spatial navigation is recomputed from the resolved positions every build, so
+  // the remote's UP/DOWN/LEFT/RIGHT always point at the visually nearest button
+  // regardless of placement. For the auto column this reproduces the v1.17
+  // sequential-with-wrap navigation exactly.
+  const nav = computeSpatialNavigation(positions, btnW, btnH);
 
   // Visible normal-state model (v1.12.0 / S11): TWO bitmaps per button.
   // obj_id (2i)=NORMAL fill, obj_id (2i+1)=SELECTED fill (entries from template).
@@ -355,12 +479,12 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
         id:                 i + 1,
         numericSelectValue: i + 1,
         autoActionFlag:     false,
-        x:                  btnX,
-        y:                  btnY[i],
-        upperBtnId:         ((i - 1 + N) % N) + 1,
-        lowerBtnId:         ((i + 1) % N) + 1,
-        leftBtnId:          i + 1,
-        rightBtnId:         i + 1,
+        x:                  positions[i].x,
+        y:                  positions[i].y,
+        upperBtnId:         nav[i].up,
+        lowerBtnId:         nav[i].down,
+        leftBtnId:          nav[i].left,
+        rightBtnId:         nav[i].right,
         // normal_state visible (its own bitmap) so the button shows at rest.
         normalStartObjId:   normalObjId,  normalEndObjId: normalObjId,  normalRepeat: false,
         selectedSoundId:    0xFF,
@@ -1233,6 +1357,8 @@ module.exports = {
   renderButtonBitmap,
   renderButtonPixels,
   styleFromTemplate,
+  computeAutoPositions,
+  computeSpatialNavigation,
   convertTsBdFormat,
   injectIGIntoM2ts,
   patchPmtForIG,

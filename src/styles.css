@@ -1475,3 +1475,54 @@ body.light-mode .tab-count { background: rgba(160,120,32,0.1) !important; color:
 body.light-mode .menus-browser { background: #ffffff; }
 body.light-mode .tpl-card { background: #f4f5f7; }
 body.light-mode .tpl-swatch-text { color: #fff; }
+
+/* ── Layout overlay canvas (v1.18.0) ─────────────────────────────────────────── */
+.layout-overlay {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  border-radius: 4px; z-index: 3;
+}
+
+/* ── Layout editor controls ────────────────────────────────────────────────── */
+.tpl-layout-hint {
+  font-size: 11px; color: var(--text-tertiary); margin-bottom: 10px; line-height: 1.5;
+}
+.tpl-pos-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+.tpl-pos-label {
+  font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono);
+  width: 14px; text-align: right;
+}
+.tpl-pos-input {
+  width: 60px; font-family: var(--font-mono); font-size: 12px; text-align: right;
+  background: var(--bg-overlay); border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm); color: var(--text-primary); padding: 3px 6px;
+}
+.tpl-pos-input:focus { border-color: #dbb85a; outline: none; }
+.tpl-align-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin: 8px 0;
+}
+.tpl-align-btn {
+  padding: 7px 4px; font-size: 14px; background: var(--bg-overlay);
+  border: 1px solid var(--border-mid); border-radius: var(--radius-sm);
+  color: var(--text-secondary); cursor: pointer; text-align: center;
+  transition: all var(--t-fast); line-height: 1;
+}
+.tpl-align-btn:hover { border-color: var(--gold-dim); color: var(--gold-bright); }
+.tpl-view-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  font-size: 12px; color: var(--text-secondary);
+}
+.tpl-view-row input[type=checkbox] { width: 13px; height: 13px; cursor: pointer; }
+.tpl-view-row label { cursor: pointer; }
+.tpl-grid-size-sel {
+  font-size: 11px; font-family: var(--font-mono); background: var(--bg-overlay);
+  border: 1px solid var(--border-mid); border-radius: var(--radius-sm);
+  color: var(--text-secondary); padding: 2px 4px; margin-left: auto;
+}
+.tpl-overlap-warn {
+  font-size: 11px; color: #ff7070; display: flex; align-items: center; gap: 5px;
+  margin-top: 8px; padding: 5px 8px;
+  background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.3);
+  border-radius: var(--radius-sm);
+}

@@ -124,6 +124,17 @@ let state = {
     fullTemplates: {},  // id → loaded template object (for thumbnail rendering)
     savedFlash: false,  // shows "Saved ✓" briefly after a successful save
     fontFilter: '',     // search text for the font-family dropdown
+    // ── v1.18.0 interactive layout editor ──────────────────────────────────────
+    livePositions:    null,   // {x,y}[] | null — working copy during drag/between renders
+    selectedBtn:      -1,     // index of selected button (-1 = none)
+    hoveredBtn:       -1,     // index of hovered button (-1 = none)
+    dragging:         false,
+    dragOffsetX:      0,
+    dragOffsetY:      0,
+    showGrid:         false,
+    gridSize:         32,
+    showSafeAreas:    true,
+    showCenter:       true,
   },
   form: {
     audio:    { lang:LANGUAGES[0], fmt:AUDIO_FORMATS[0], label:'', isDefault:false, file:null },
@@ -506,6 +517,12 @@ async function selectTemplate(id) {
   ed.error = null;
   ed.previews = {};
   ed.previewKey = null;
+  // Fresh layout-editor state for the newly selected template (positions are
+  // copied lazily from template.button.positions on first drag).
+  ed.livePositions = null;
+  ed.selectedBtn = -1;
+  ed.hoveredBtn = -1;
+  ed.dragging = false;
   render();
   refreshPreviews();
 }
@@ -683,6 +700,31 @@ function _loadImage(src) {
   });
 }
 
+// Auto-layout positions for the preview — a byte-identical mirror of
+// computeAutoPositions() in src/lib/menu-builder.js. The two MUST NOT drift, so
+// the preview shows exactly where the disc encoder will place each button.
+function _autoPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
+  const totalH = count * bh + (count - 1) * gap;
+  const startY = Math.round((fh - totalH) / 2);
+  const startX = Math.round((fw - bw) / 2);
+  return Array.from({ length: count }, (_, i) => ({
+    x: startX,
+    y: startY + i * (bh + gap),
+  }));
+}
+
+// Resolve the 3 sample-button positions for a template: stored positions win,
+// missing/null entries fall back to auto-layout. Used by both the preview render
+// and the interactive overlay so they always agree.
+function _resolvePreviewPositions(tpl) {
+  const b = tpl.button;
+  const auto = _autoPositions(3, b.width, b.height, b.gap);
+  const stored = Array.isArray(b.positions) ? b.positions : null;
+  return auto.map((a, i) =>
+    (stored && stored[i] && stored[i].x != null) ? { x: stored[i].x, y: stored[i].y } : { ...a }
+  );
+}
+
 async function renderMenuPreviewLocal(tpl) {
   const FW = 1920, FH = 1080;
   const cv = document.createElement('canvas');
@@ -716,18 +758,391 @@ async function renderMenuPreviewLocal(tpl) {
   }
 
   const b = tpl.button;
-  const totalH = 3 * b.height + 2 * b.gap;
-  const startY = Math.round((FH - totalH) / 2);
-  const startX = Math.round((FW - b.width) / 2);
+  const pos = _resolvePreviewPositions(tpl);
   const samples = [
     [b.normalFill,   'Play Movie'],
     [b.selectedFill, 'Scene Selection'],
     [b.normalFill,   'Special Features'],
   ];
   samples.forEach(([fill, label], i) => {
-    drawTemplateButton(ctx, tpl, fill, label, startX, startY + i * (b.height + b.gap));
+    drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
   });
   return cv.toDataURL('image/png');
+}
+
+// ── v1.18.0 Interactive layout overlay ───────────────────────────────────────────
+// A transparent canvas over the TV-screen preview. For custom templates it lets
+// the user drag the 3 sample buttons anywhere on the 1920×1080 frame; for built-in
+// templates it renders the same guides/outlines but is non-interactive. The drag
+// loop NEVER calls render() — it mutates state.templateEditor.livePositions and
+// redraws only the overlay; render() (and the disc-accurate menu re-render) fires
+// once on mouseup via updateDraft().
+let _overlayHandlers = null;
+
+// Lazily populate the working position list from the draft (stored positions win,
+// missing entries fall back to auto-layout). Returns the live array.
+function _ensureLivePositions() {
+  const ed = state.templateEditor;
+  if (!ed.livePositions && ed.draft) ed.livePositions = _resolvePreviewPositions(ed.draft);
+  return ed.livePositions;
+}
+
+// Indices of buttons whose bounding boxes intersect any other button.
+function _overlapSet(positions, bw, bh) {
+  const set = new Set();
+  for (let i = 0; i < positions.length; i++) {
+    for (let j = i + 1; j < positions.length; j++) {
+      const a = positions[i], b = positions[j];
+      if (a.x < b.x + bw && a.x + bw > b.x && a.y < b.y + bh && a.y + bh > b.y) {
+        set.add(i); set.add(j);
+      }
+    }
+  }
+  return set;
+}
+// Does the current preview (live or resolved) have any overlapping buttons?
+function _hasPreviewOverlap() {
+  const ed = state.templateEditor;
+  if (!ed.draft) return false;
+  const positions = ed.livePositions || _resolvePreviewPositions(ed.draft);
+  return _overlapSet(positions, ed.draft.button.width, ed.draft.button.height).size > 0;
+}
+
+// Disc-space (1920×1080) coordinates of a mouse event over the overlay.
+function _overlayToDisc(e, overlay) {
+  const rect = overlay.getBoundingClientRect();
+  return {
+    discX: Math.round((e.clientX - rect.left) * (1920 / rect.width)),
+    discY: Math.round((e.clientY - rect.top)  * (1080 / rect.height)),
+  };
+}
+
+// Draw the guides + button outlines + handles onto the overlay canvas.
+function renderOverlay(overlay) {
+  if (!overlay) return;
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl) return;
+  const ctx = overlay.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // logical coords = CSS pixels
+  const displayW = overlay.width / dpr;
+  const displayH = overlay.height / dpr;
+  if (displayW < 1 || displayH < 1) return;
+
+  // 1. Clear
+  ctx.clearRect(0, 0, displayW, displayH);
+
+  const scaleX = displayW / 1920, scaleY = displayH / 1080;
+  const b = tpl.button;
+  const bw = b.width, bh = b.height;
+  const positions = ed.livePositions || _resolvePreviewPositions(tpl);
+
+  // 2. Grid
+  if (ed.showGrid) {
+    const gs = ed.gridSize;
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x <= 1920; x += gs) {
+      ctx.beginPath(); ctx.moveTo(x * scaleX, 0); ctx.lineTo(x * scaleX, displayH); ctx.stroke();
+    }
+    for (let y = 0; y <= 1080; y += gs) {
+      ctx.beginPath(); ctx.moveTo(0, y * scaleY); ctx.lineTo(displayW, y * scaleY); ctx.stroke();
+    }
+  }
+
+  // 3. Center guides
+  if (ed.showCenter) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(960 * scaleX, 0); ctx.lineTo(960 * scaleX, displayH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, 540 * scaleY); ctx.lineTo(displayW, 540 * scaleY); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 4. Safe-area guides
+  if (ed.showSafeAreas) {
+    // Action safe: 5% inset
+    ctx.strokeStyle = 'rgba(219, 184, 90, 0.35)';
+    ctx.lineWidth = 0.75;
+    ctx.strokeRect(96 * scaleX, 54 * scaleY, (1920 - 192) * scaleX, (1080 - 108) * scaleY);
+    ctx.fillStyle = 'rgba(219, 184, 90, 0.45)';
+    ctx.font = `${Math.max(7, Math.round(16 * scaleX))}px monospace`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('ACTION SAFE', 98 * scaleX, 66 * scaleY + 8 * scaleY);
+
+    // Title safe: 10% inset
+    ctx.strokeStyle = 'rgba(255, 140, 0, 0.4)';
+    ctx.strokeRect(192 * scaleX, 108 * scaleY, (1920 - 384) * scaleX, (1080 - 216) * scaleY);
+    ctx.fillStyle = 'rgba(255, 140, 0, 0.55)';
+    ctx.fillText('TITLE SAFE', 194 * scaleX, 120 * scaleY + 8 * scaleY);
+  }
+
+  // 5. Button outlines + index + handles
+  const overlaps = _overlapSet(positions, bw, bh);
+  positions.forEach((p, i) => {
+    const rx = p.x * scaleX, ry = p.y * scaleY, rw = bw * scaleX, rh = bh * scaleY;
+    const isSelected = i === ed.selectedBtn;
+    const isHovered  = i === ed.hoveredBtn;
+
+    _btnShapePath(ctx, rx, ry, rw, rh, (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect',
+      Number.isInteger(b.cornerRadius) ? b.cornerRadius * scaleX : 0);
+    if (isSelected)      { ctx.strokeStyle = '#dbb85a'; ctx.lineWidth = 2; ctx.setLineDash([]); }
+    else if (isHovered)  { ctx.strokeStyle = 'rgba(219,184,90,0.7)'; ctx.lineWidth = 1.5; ctx.setLineDash([]); }
+    else                 { ctx.strokeStyle = 'rgba(219,184,90,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([5, 3]); }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Button index number (centered)
+    ctx.fillStyle = isSelected ? 'rgba(219,184,90,0.9)' : 'rgba(219,184,90,0.4)';
+    ctx.font = `bold ${Math.max(9, Math.round(22 * scaleX))}px monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), rx + rw / 2, ry + rh / 2);
+
+    // Corner handles (selected only)
+    if (isSelected) {
+      const hs = 6;
+      [[rx, ry], [rx + rw, ry], [rx, ry + rh], [rx + rw, ry + rh]].forEach(([hx, hy]) => {
+        ctx.fillStyle = '#dbb85a';
+        ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      });
+    }
+  });
+
+  // 6. Overlap warning — re-stroke intersecting buttons in red
+  if (overlaps.size) {
+    ctx.strokeStyle = 'rgba(255,80,80,0.8)';
+    ctx.lineWidth = 2; ctx.setLineDash([4, 2]);
+    overlaps.forEach(i => {
+      const p = positions[i];
+      _btnShapePath(ctx, p.x * scaleX, p.y * scaleY, bw * scaleX, bh * scaleY,
+        (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect',
+        Number.isInteger(b.cornerRadius) ? b.cornerRadius * scaleX : 0);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+
+  // 7. Position HUD during drag
+  if (ed.dragging && ed.selectedBtn >= 0 && positions[ed.selectedBtn]) {
+    const p = positions[ed.selectedBtn];
+    const hudX = (p.x + bw / 2) * scaleX;
+    const hudY = p.y * scaleY - 22;
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(hudX - 44, hudY, 88, 17, 4);
+    else ctx.rect(hudX - 44, hudY, 88, 17);
+    ctx.fill();
+    ctx.fillStyle = '#dbb85a'; ctx.font = '10px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`X:${p.x}  Y:${p.y}`, hudX, hudY + 8.5);
+  }
+}
+
+// ── Overlay mouse handlers (no render() during a drag) ──────────────────────────
+function _onOverlayMouseDown(e) {
+  const overlay = e.currentTarget;
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl) return;
+  const { discX, discY } = _overlayToDisc(e, overlay);
+  const bw = tpl.button.width, bh = tpl.button.height;
+  const positions = _ensureLivePositions();
+  if (!positions) return;
+
+  let hit = -1;
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const p = positions[i];
+    if (discX >= p.x && discX <= p.x + bw && discY >= p.y && discY <= p.y + bh) { hit = i; break; }
+  }
+  ed.selectedBtn = hit;
+  if (hit >= 0) {
+    ed.dragging = true;
+    ed.dragOffsetX = discX - positions[hit].x;
+    ed.dragOffsetY = discY - positions[hit].y;
+    overlay.style.cursor = 'grabbing';
+  }
+  renderOverlay(overlay);
+  _updatePositionInputs();
+}
+
+function _onOverlayMouseMove(e) {
+  const overlay = e.currentTarget;
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl) return;
+  const { discX, discY } = _overlayToDisc(e, overlay);
+  const bw = tpl.button.width, bh = tpl.button.height;
+  const positions = ed.livePositions;
+
+  if (ed.dragging && positions) {
+    const i = ed.selectedBtn;
+    let newX = Math.round(discX - ed.dragOffsetX);
+    let newY = Math.round(discY - ed.dragOffsetY);
+    if (ed.showGrid) {
+      const gs = ed.gridSize;
+      newX = Math.round(newX / gs) * gs;
+      newY = Math.round(newY / gs) * gs;
+    }
+    newX = Math.max(0, Math.min(newX, 1920 - bw));
+    newY = Math.max(0, Math.min(newY, 1080 - bh));
+    positions[i] = { x: newX, y: newY };
+    overlay.style.cursor = 'grabbing';
+    renderOverlay(overlay);
+    _updatePositionInputs();
+    return;
+  }
+
+  if (positions) {
+    let hovered = -1;
+    for (let i = positions.length - 1; i >= 0; i--) {
+      const p = positions[i];
+      if (discX >= p.x && discX <= p.x + bw && discY >= p.y && discY <= p.y + bh) { hovered = i; break; }
+    }
+    if (hovered !== ed.hoveredBtn) {
+      ed.hoveredBtn = hovered;
+      renderOverlay(overlay);
+    }
+    overlay.style.cursor = hovered >= 0 ? 'grab' : 'crosshair';
+  }
+}
+
+function _onOverlayMouseUp(e) {
+  const ed = state.templateEditor;
+  if (!ed.dragging) return;
+  ed.dragging = false;
+  e.currentTarget.style.cursor = 'grab';
+  _commitLivePositions();   // single render() + disc-accurate preview re-render
+}
+
+function _onOverlayMouseLeave(e) {
+  const ed = state.templateEditor;
+  if (ed.dragging) { _onOverlayMouseUp(e); return; }
+  ed.hoveredBtn = -1;
+  renderOverlay(e.currentTarget);
+}
+
+// Commit the working positions into the draft (triggers render + preview). Each
+// stored entry is clamped to the on-frame range so validateTemplate always passes.
+function _commitLivePositions() {
+  const ed = state.templateEditor;
+  if (!ed.livePositions || !ed.draft) return;
+  const bw = ed.draft.button.width, bh = ed.draft.button.height;
+  const snapshot = ed.livePositions.map(p => ({
+    x: Math.max(0, Math.min(Math.round(p.x), 1920 - bw)),
+    y: Math.max(0, Math.min(Math.round(p.y), 1080 - bh)),
+  }));
+  ed.livePositions = snapshot.map(p => ({ ...p }));
+  updateDraft(t => {
+    const existing = (t.button.positions || []).slice();
+    snapshot.forEach((p, i) => { existing[i] = { ...p }; });
+    t.button.positions = existing;
+  });
+}
+
+// Sync the X/Y number inputs + button selector to the current selection. Skips
+// whichever control has focus so it never fights the user mid-edit.
+function _updatePositionInputs() {
+  const ed = state.templateEditor;
+  const i = ed.selectedBtn;
+  const positions = ed.livePositions;
+  const xEl = document.getElementById('tpl-pos-x');
+  const yEl = document.getElementById('tpl-pos-y');
+  const sel = document.getElementById('tpl-pos-btn-select');
+  if (sel && i >= 0 && document.activeElement !== sel) sel.value = String(i);
+  if (i < 0 || !positions || !positions[i]) return;
+  if (xEl && document.activeElement !== xEl) xEl.value = positions[i].x;
+  if (yEl && document.activeElement !== yEl) yEl.value = positions[i].y;
+}
+
+// Alignment / distribution / reset tools. Each operates on the resolved sample
+// positions and commits (which re-renders + re-renders the disc-accurate preview).
+function _applyAlign(kind) {
+  const ed = state.templateEditor;
+  const tpl = ed.draft;
+  if (!tpl || isReadonly(ed.selectedId)) return;
+  const bw = tpl.button.width, bh = tpl.button.height;
+
+  if (kind === 'stack') {
+    ed.livePositions = null;
+    updateDraft(t => { delete t.button.positions; });
+    return;
+  }
+
+  const cur = (_ensureLivePositions() || []).map(p => ({ ...p }));
+  if (kind === 'centerFrame') { _commitPositions(_autoPositions(3, bw, bh, tpl.button.gap)); return; }
+
+  if (kind === 'left') {
+    const minX = Math.min(...cur.map(p => p.x));
+    cur.forEach(p => { p.x = minX; });
+  } else if (kind === 'right') {
+    const maxR = Math.max(...cur.map(p => p.x + bw));
+    cur.forEach(p => { p.x = maxR - bw; });
+  } else if (kind === 'centerH') {
+    const x = Math.round((1920 - bw) / 2);
+    cur.forEach(p => { p.x = x; });
+  } else if (kind === 'centerV') {
+    const y = Math.round((1080 - bh) / 2);
+    cur.forEach(p => { p.y = y; });
+  } else if (kind === 'distV') {
+    const order = cur.map((_, i) => i).sort((a, b) => cur[a].y - cur[b].y);
+    const top = cur[order[0]].y, bot = cur[order[order.length - 1]].y, n = order.length;
+    order.forEach((bi, k) => { cur[bi].y = Math.round(top + (bot - top) * (n > 1 ? k / (n - 1) : 0)); });
+  } else if (kind === 'distH') {
+    const order = cur.map((_, i) => i).sort((a, b) => cur[a].x - cur[b].x);
+    const left = cur[order[0]].x, right = cur[order[order.length - 1]].x, n = order.length;
+    order.forEach((bi, k) => { cur[bi].x = Math.round(left + (right - left) * (n > 1 ? k / (n - 1) : 0)); });
+  }
+  _commitPositions(cur);
+}
+
+// Commit an arbitrary positions array (used by the alignment tools).
+function _commitPositions(newPositions) {
+  state.templateEditor.livePositions = newPositions.map(p => ({ x: p.x, y: p.y }));
+  _commitLivePositions();
+}
+
+// Re-initialize the overlay after every full render: size it to the screen,
+// (re)wire the drag handlers (custom templates only), and paint the guides.
+function initLayoutOverlay() {
+  const overlay = document.getElementById('layout-overlay');
+  if (!overlay) return;
+  const ed = state.templateEditor;
+  const rect = overlay.getBoundingClientRect();
+  const dpr  = window.devicePixelRatio || 1;
+  if (rect.width < 1 || rect.height < 1) {
+    requestAnimationFrame(() => initLayoutOverlay());   // layout not ready yet
+    return;
+  }
+  overlay.width  = Math.round(rect.width  * dpr);
+  overlay.height = Math.round(rect.height * dpr);
+
+  const editable = !isReadonly(ed.selectedId) && !!ed.draft;
+  overlay.style.cursor        = editable ? 'crosshair' : 'default';
+  overlay.style.pointerEvents = editable ? 'auto' : 'none';
+
+  if (_overlayHandlers) {
+    overlay.removeEventListener('mousedown',  _overlayHandlers.down);
+    overlay.removeEventListener('mousemove',  _overlayHandlers.move);
+    overlay.removeEventListener('mouseup',    _overlayHandlers.up);
+    overlay.removeEventListener('mouseleave', _overlayHandlers.leave);
+    _overlayHandlers = null;
+  }
+  if (editable) {
+    _overlayHandlers = {
+      down:  _onOverlayMouseDown,
+      move:  _onOverlayMouseMove,
+      up:    _onOverlayMouseUp,
+      leave: _onOverlayMouseLeave,
+    };
+    overlay.addEventListener('mousedown',  _overlayHandlers.down);
+    overlay.addEventListener('mousemove',  _overlayHandlers.move);
+    overlay.addEventListener('mouseup',    _overlayHandlers.up);
+    overlay.addEventListener('mouseleave', _overlayHandlers.leave);
+  }
+  renderOverlay(overlay);
 }
 
 // Apply an edit to the working draft, keep fill colors consistent with the
@@ -888,8 +1303,9 @@ function previewHTML() {
     <div class="tv-assembly">
       <div class="tv-bezel">
         <div class="tv-screen${fade}">
-          ${menu ? `<img src="${menu}" alt="Full menu preview">`
+          ${menu ? `<img src="${menu}" id="menu-preview-img" alt="Full menu preview">`
                  : `<div class="tv-screen-empty">${esc(caption)}</div>`}
+          <canvas id="layout-overlay" class="layout-overlay"></canvas>
         </div>
       </div>
       <div class="tv-stand-shadow"></div>
@@ -1206,6 +1622,55 @@ function templateEditorHTML(tpl) {
     <div class="tpl-sub-label">Border</div>
     ${sliderRowHTML('tpl-border', 'Thickness', 0, 12, 1, b.border, b.border + 'px')}`;
 
+  // SECTION B2 — Layout (v1.18.0 interactive editor)
+  const lp = ed.livePositions || _resolvePreviewPositions(tpl);
+  const selIdx = ed.selectedBtn >= 0 ? ed.selectedBtn : 0;
+  const selPos = lp[selIdx] || lp[0] || { x: 0, y: 0 };
+  const hasOverlap = _overlapSet(lp, b.width, b.height).size > 0;
+  const gs = ed.gridSize;
+  const layoutSection = `
+    <div class="tpl-layout-hint">Drag buttons on the preview, or set exact coordinates below.</div>
+    <div class="tpl-ctl-row">
+      <span class="tpl-ctl-label">Button</span>
+      <select id="tpl-pos-btn-select">
+        ${[0, 1, 2].map(i => `<option value="${i}" ${i === selIdx ? 'selected' : ''}>Button ${i + 1}</option>`).join('')}
+      </select>
+    </div>
+    <div class="tpl-pos-row">
+      <span class="tpl-pos-label">X</span>
+      <input type="number" id="tpl-pos-x" class="tpl-pos-input" min="0" max="1919" step="1" value="${selPos.x}">
+      <span class="tpl-pos-label">Y</span>
+      <input type="number" id="tpl-pos-y" class="tpl-pos-input" min="0" max="1079" step="1" value="${selPos.y}">
+    </div>
+    <div class="tpl-sub-label">Align</div>
+    <div class="tpl-align-grid">
+      <button class="tpl-align-btn" data-align="left"    title="Align left edges">⊢</button>
+      <button class="tpl-align-btn" data-align="right"   title="Align right edges">⊣</button>
+      <button class="tpl-align-btn" data-align="centerH" title="Center horizontally">↔</button>
+      <button class="tpl-align-btn" data-align="centerV" title="Center vertically">↕</button>
+      <button class="tpl-align-btn" data-align="distV"   title="Distribute vertically">⇕</button>
+      <button class="tpl-align-btn" data-align="distH"   title="Distribute horizontally">⇔</button>
+      <button class="tpl-align-btn" data-align="stack"   title="Reset to auto stack">≡</button>
+      <button class="tpl-align-btn" data-align="centerFrame" title="Center all in frame">⊕</button>
+    </div>
+    <div class="tpl-sub-label">View</div>
+    <div class="tpl-view-row">
+      <input type="checkbox" id="tpl-show-grid" ${ed.showGrid ? 'checked' : ''}>
+      <label for="tpl-show-grid">Grid</label>
+      <select id="tpl-grid-size" class="tpl-grid-size-sel">
+        ${[8, 16, 32, 48].map(v => `<option value="${v}" ${gs === v ? 'selected' : ''}>${v}px</option>`).join('')}
+      </select>
+    </div>
+    <div class="tpl-view-row">
+      <input type="checkbox" id="tpl-show-safe" ${ed.showSafeAreas ? 'checked' : ''}>
+      <label for="tpl-show-safe">Safe areas</label>
+    </div>
+    <div class="tpl-view-row">
+      <input type="checkbox" id="tpl-show-center" ${ed.showCenter ? 'checked' : ''}>
+      <label for="tpl-show-center">Center guides</label>
+    </div>
+    ${hasOverlap ? '<div class="tpl-overlap-warn">⚠ Buttons overlap — may cause issues on some players</div>' : ''}`;
+
   // SECTION C — Typography
   const fontPct = Math.round((tpl.font.sizeRatio || 0.5) * 100) + '%';
   const typoSection = `
@@ -1232,6 +1697,7 @@ function templateEditorHTML(tpl) {
     ${presetsBarHTML()}
     ${accordionHTML('bg', 'Background', bgSection)}
     ${accordionHTML('buttons', 'Buttons', btnSection)}
+    ${accordionHTML('layout', 'Layout', layoutSection)}
     ${accordionHTML('type', 'Typography', typoSection)}
     ${accordionHTML('meta', 'Template', metaSection)}`;
 }
@@ -2329,6 +2795,46 @@ function attachListeners() {
   document.getElementById('tpl-font-size2')?.addEventListener('input', e =>
     updateDraft(t => { t.font.sizeRatio = parseFloat(e.target.value); }));
 
+  // SECTION B2 — Layout (v1.18.0 interactive editor)
+  const _layoutOverlay = () => document.getElementById('layout-overlay');
+  document.getElementById('tpl-pos-btn-select')?.addEventListener('change', e => {
+    state.templateEditor.selectedBtn = parseInt(e.target.value, 10) || 0;
+    _ensureLivePositions();
+    _updatePositionInputs();
+    renderOverlay(_layoutOverlay());
+  });
+  const _onPosInput = (axis) => (e) => {
+    const ed = state.templateEditor;
+    const tpl = ed.draft; if (!tpl) return;
+    const positions = _ensureLivePositions();
+    let i = ed.selectedBtn; if (i < 0) i = ed.selectedBtn = 0;
+    if (!positions[i]) return;
+    const bw = tpl.button.width, bh = tpl.button.height;
+    let v = parseInt(e.target.value, 10); if (!Number.isFinite(v)) v = 0;
+    if (axis === 'x') positions[i] = { x: Math.max(0, Math.min(v, 1920 - bw)), y: positions[i].y };
+    else              positions[i] = { x: positions[i].x, y: Math.max(0, Math.min(v, 1080 - bh)) };
+    renderOverlay(_layoutOverlay());
+    _updatePositionInputs();
+  };
+  document.getElementById('tpl-pos-x')?.addEventListener('input', _onPosInput('x'));
+  document.getElementById('tpl-pos-y')?.addEventListener('input', _onPosInput('y'));
+  document.getElementById('tpl-pos-x')?.addEventListener('blur', _commitLivePositions);
+  document.getElementById('tpl-pos-y')?.addEventListener('blur', _commitLivePositions);
+  document.querySelectorAll('[data-align]').forEach(el =>
+    el.addEventListener('click', () => _applyAlign(el.dataset.align)));
+  document.getElementById('tpl-show-grid')?.addEventListener('change', e => {
+    state.templateEditor.showGrid = e.target.checked; renderOverlay(_layoutOverlay());
+  });
+  document.getElementById('tpl-grid-size')?.addEventListener('change', e => {
+    state.templateEditor.gridSize = parseInt(e.target.value, 10) || 32; renderOverlay(_layoutOverlay());
+  });
+  document.getElementById('tpl-show-safe')?.addEventListener('change', e => {
+    state.templateEditor.showSafeAreas = e.target.checked; renderOverlay(_layoutOverlay());
+  });
+  document.getElementById('tpl-show-center')?.addEventListener('change', e => {
+    state.templateEditor.showCenter = e.target.checked; renderOverlay(_layoutOverlay());
+  });
+
   // SECTION D — Template meta
   document.getElementById('tpl-name2')?.addEventListener('input', e =>
     updateDraft(t => { t.name = e.target.value; }));
@@ -2600,7 +3106,10 @@ function attachListeners() {
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
 
-
+  // ── v1.18.0 layout overlay — (re)size + (re)wire drag handlers + paint guides.
+  // Always last: the overlay needs the final DOM in place. Drag state survives a
+  // re-render because it lives in state.templateEditor, not the DOM.
+  initLayoutOverlay();
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────────

@@ -106,6 +106,19 @@ function validateTemplate(obj) {
   if (b.cornerRadius !== undefined && !_isInt(b.cornerRadius, 4, 60)) {
     E('button.cornerRadius must be an integer 4-60');
   }
+  // ── button positions (optional; v1.18.0 layout editor) ──
+  // The source of truth for button placement on the 1920×1080 frame. Each entry
+  // is the top-left {x,y} of a button; null means "auto-layout this one". Absent
+  // → full auto-layout (backward-compatible; built-in templates carry none).
+  if (b.positions !== undefined && b.positions !== null) {
+    if (!Array.isArray(b.positions)) E('button.positions must be an array (or null)');
+    b.positions.forEach((p, i) => {
+      if (p === null) return;  // null → auto-layout this button
+      if (!p || typeof p !== 'object') E(`button.positions[${i}] must be {x,y} or null`);
+      if (!_isInt(p.x, 0, 1919)) E(`button.positions[${i}].x must be an integer 0-1919`);
+      if (!_isInt(p.y, 0, 1079)) E(`button.positions[${i}].y must be an integer 0-1079`);
+    });
+  }
   const paletteIds = obj.palette.map(e => e.id);
   if (!paletteIds.includes(b.borderEntry)) E('button.borderEntry must reference a palette id');
   for (const key of ['normalFill', 'selectedFill']) {
