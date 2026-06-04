@@ -119,6 +119,11 @@ let state = {
     advancedPalette: false,
     busy: false,
     nameModal: null,    // {mode:'duplicate'|'saveAs', value} — name-entry modal (Electron lacks window.prompt)
+    // v1.16.0 thumbnail browser + design editor
+    thumbs: {},         // id → full-res preview dataURL (cached, scaled into card canvases)
+    fullTemplates: {},  // id → loaded template object (for thumbnail rendering)
+    savedFlash: false,  // shows "Saved ✓" briefly after a successful save
+    fontFilter: '',     // search text for the font-family dropdown
   },
   form: {
     audio:    { lang:LANGUAGES[0], fmt:AUDIO_FORMATS[0], label:'', isDefault:false, file:null },
@@ -622,7 +627,10 @@ function drawTemplateButton(ctx, tpl, fill, label, x, y) {
   ctx.fillStyle = beCss;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `${fontSize}px MenuFont, "Helvetica Neue", Arial, sans-serif`;
+  // The chosen font.family (if any) leads the stack so the preview reflects the
+  // user's pick; MenuFont stays as the fallback (the disc encoder always uses it).
+  const fam = (tpl.font && tpl.font.family) ? `"${tpl.font.family}", ` : '';
+  ctx.font = `${fontSize}px ${fam}MenuFont, "Helvetica Neue", Arial, sans-serif`;
   if (label) ctx.fillText(label, x + w / 2, y + h / 2 + 1);
 }
 
@@ -774,8 +782,13 @@ async function saveTemplate() {
   if (!ed.draft || isReadonly(ed.selectedId)) return;
   const r = await window.discForge.templateSave(ed.draft);
   if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); return; }
+  invalidateThumb(r.id);          // the saved look changed → re-render its thumbnail
   await loadTemplates();
-  await selectTemplate(r.id);  // re-reads from disk → baseline reset, dirty cleared
+  await selectTemplate(r.id);     // re-reads from disk → baseline reset, dirty cleared
+  state.templateEditor.savedFlash = true;
+  render();
+  ensureThumbnails();
+  setTimeout(() => { state.templateEditor.savedFlash = false; render(); }, 2000);
 }
 function revertTemplate() {
   const ed = state.templateEditor;
@@ -820,32 +833,43 @@ function _entryRoles(tpl, id) {
   return roles.join(', ');
 }
 
-// Live preview pane: a full-screen 16:9 menu scene (what the TV shows), with the
-// isolated Normal/Selected button PNGs available as a collapsible detail below.
-// On a validation error, the pane shows the error banner instead.
+// Live preview pane: a full-screen 16:9 menu scene displayed inside a cinematic
+// flat-screen-TV bezel (the hero element of the Menus tab). The isolated
+// Normal/Selected button PNGs sit in a collapsible detail below. On a validation
+// error, the pane shows the error banner instead.
+let _lastSelForFade = null;   // drives the opacity fade only on template switch
 function previewHTML() {
   const ed = state.templateEditor;
   if (ed.error) return `<div class="tpl-error">⚠ ${esc(ed.error)}</div>`;
   const menu = ed.previews.menu;
+  // Fade in only when the browsed template actually changed — not on every
+  // keystroke in the editor (which would make the preview flicker constantly).
+  const fade = (ed.selectedId !== _lastSelForFade) ? ' tv-fade' : '';
+  _lastSelForFade = ed.selectedId;
   const caption = ed.menuRendering
     ? 'Rendering…'
     : (menu ? 'Preview — 3 sample buttons, center of 1920×1080 frame'
             : 'Full-screen preview unavailable on this Mac — the disc menu will still build correctly. See button states below.');
   const btn = (src, label) => `<div class="tpl-preview-col">
       <span class="tpl-preview-label">${label}</span>
-      ${src ? `<img class="tpl-preview-img tpl-preview-img-sm" src="${src}" alt="${label} button preview">`
-            : `<div class="tpl-preview-img tpl-preview-img-sm" style="width:200px;height:40px"></div>`}
+      ${src ? `<img class="tpl-preview-img" src="${src}" alt="${label} button preview">`
+            : `<div class="tpl-preview-img" style="width:300px;height:40px"></div>`}
     </div>`;
-  return `<div class="field"><label class="field-label">Preview</label>
-    <div class="tpl-menu-preview-wrap">
-      ${menu ? `<img src="${menu}" alt="Full menu preview">` : ''}
+  return `
+    <div class="tv-assembly">
+      <div class="tv-bezel">
+        <div class="tv-screen${fade}">
+          ${menu ? `<img src="${menu}" alt="Full menu preview">`
+                 : `<div class="tv-screen-empty">${esc(caption)}</div>`}
+        </div>
+      </div>
+      <div class="tv-stand-shadow"></div>
     </div>
     <div class="tpl-menu-preview-caption">${esc(caption)}</div>
     <details class="tpl-btn-detail">
       <summary>Button states</summary>
       <div class="tpl-preview-row">${btn(ed.previews.normal, 'Normal')}${btn(ed.previews.selected, 'Selected')}</div>
-    </details>
-  </div>`;
+    </details>`;
 }
 
 // "white" / "#rrggbb" → "#rrggbb" for a color <input>.
@@ -856,198 +880,358 @@ function _fontColorHex(c) {
   return '#ffffff';
 }
 
-// Phase 4A read-only field display (built-ins).
-function templateReadonlyFields(tpl) {
-  const bg = tpl.background;
-  const paletteRows = tpl.palette.map(e => `
-    <div class="tpl-pal-row">
-      <span class="tpl-swatch" style="background:${_paletteHex(e)}"></span>
-      <span class="tpl-pal-idx">#${e.id}</span>
-      <span class="tpl-pal-role">${esc(_entryRoles(tpl, e.id))}</span>
-      <span class="tpl-pal-val">${_paletteHex(e)} · Y${e.Y} Cr${e.Cr} Cb${e.Cb}</span>
-    </div>`).join('');
-  return `
-    <div class="field"><label class="field-label">Name</label>
-      <input type="text" value="${esc(tpl.name)}" disabled></div>
-    <div class="field"><label class="field-label">Palette</label>
-      <div class="tpl-pal-list">${paletteRows}</div></div>
-    <div class="field"><label class="field-label">Button geometry</label>
-      <div class="tpl-kv">
-        <span>Width <b>${tpl.button.width}</b></span>
-        <span>Height <b>${tpl.button.height}</b></span>
-        <span>Gap <b>${tpl.button.gap}</b></span>
-        <span>Border <b>${tpl.button.border}</b></span>
-      </div></div>
-    <div class="field"><label class="field-label">Font</label>
-      <div class="tpl-kv">
-        <span>File <b>${esc(tpl.font.file)}</b></span>
-        <span>Size ratio <b>${tpl.font.sizeRatio}</b></span>
-        <span>Color <b>${esc(tpl.font.color)}</b></span>
-      </div></div>
-    <div class="field"><label class="field-label">Background</label>
-      <div class="tpl-kv">
-        <span>Type <b>${esc(bg.type)}</b></span>
-        ${bg.type === 'solid'
-          ? `<span>Color <b>#${esc(bg.color)}</b></span><span class="tpl-swatch" style="background:#${esc(bg.color)}"></span>`
-          : `<span>Fit <b>${esc(bg.fit)}</b></span><span>Image <b>${bg.imagePath ? esc(bg.imagePath.split('/').pop()) : '(none — set per disc)'}</b></span>`}
-      </div></div>`;
+// ── v1.16.0 Menus tab — thumbnail browser ───────────────────────────────────────
+// Each template gets a small rendered preview card. The full 1920×1080 scene is
+// rendered once by renderMenuPreviewLocal and cached as a data URL; paintThumb
+// scales it into the card's canvas. Rendering is lazy + staggered so opening the
+// tab never freezes the UI.
+const THUMB_W = 360, THUMB_H = 202;   // render resolution (2× the 180×101 display)
+const SAFE_FONTS = ['Helvetica Neue', 'Arial', 'Georgia', 'Times New Roman',
+  'Courier New', 'Futura', 'Gill Sans', 'Optima', 'Palatino'];
+
+let _thumbRunning = false;
+const _thumbImgCache = {};   // id → decoded Image of the cached dataURL
+
+function availableFonts() {
+  return (state.systemFonts && state.systemFonts.length) ? state.systemFonts : SAFE_FONTS;
+}
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function _bgImagePath(v) { return typeof v === 'string' ? v : (v && v.path) || ''; }
+function _bgImageName(v) { const p = _bgImagePath(v); return p.split('/').pop() || 'image'; }
+
+// Paint a template's cached preview into its browser-thumbnail canvas (scaled).
+// Re-queries the DOM each call because render() rebuilds the canvases.
+function paintThumb(id) {
+  const cv = document.querySelector(`canvas[data-thumb-id="${CSS.escape(id)}"]`);
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return;
+  const tpl = state.templateEditor.fullTemplates[id];
+  const bgHex = (tpl && tpl.background && tpl.background.color)
+    ? ('#' + String(tpl.background.color).replace(/^#/, '')) : '#0a0a12';
+  ctx.fillStyle = bgHex; ctx.fillRect(0, 0, cv.width, cv.height);   // bg-color placeholder
+  const dataUrl = state.templateEditor.thumbs[id];
+  if (!dataUrl) return;
+  const cached = _thumbImgCache[id];
+  if (cached && cached.complete) { ctx.drawImage(cached, 0, 0, cv.width, cv.height); return; }
+  const img = new Image();
+  img.onload = () => {
+    _thumbImgCache[id] = img;
+    const c2 = document.querySelector(`canvas[data-thumb-id="${CSS.escape(id)}"]`);
+    if (c2) c2.getContext('2d').drawImage(img, 0, 0, c2.width, c2.height);
+  };
+  img.src = dataUrl;
 }
 
-// Phase 4B editable editor (user templates).
-function templateEditorFields(tpl) {
-  const adv = state.templateEditor.advancedPalette;
-  const b = tpl.button;
-  const bg = tpl.background;
+// Paint everything already cached, then lazily render anything missing.
+function ensureThumbnails() {
+  const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
+  for (const m of all) paintThumb(m.id);
+  if (all.some(m => !state.templateEditor.thumbs[m.id]) && !_thumbRunning) renderMissingThumbnails();
+}
+async function renderMissingThumbnails() {
+  _thumbRunning = true;
+  try {
+    const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
+    for (const m of all) {
+      if (state.templateEditor.thumbs[m.id]) continue;
+      let tpl = state.templateEditor.fullTemplates[m.id];
+      if (!tpl) {
+        const r = await window.discForge.templateLoad(m.id);
+        if (!r || !r.ok) continue;
+        tpl = r.template;
+        state.templateEditor.fullTemplates[m.id] = tpl;
+      }
+      paintThumb(m.id);   // show the bg-color placeholder immediately
+      let dataUrl = null;
+      try { dataUrl = await renderMenuPreviewLocal(tpl); } catch (_) {}
+      if (dataUrl) {
+        state.templateEditor.thumbs[m.id] = dataUrl;
+        delete _thumbImgCache[m.id];
+        paintThumb(m.id);
+      }
+      await _sleep(30);   // stagger so the UI stays responsive
+    }
+  } finally { _thumbRunning = false; }
+}
+// Drop a template's cached thumbnail so it re-renders (after its edit is saved).
+function invalidateThumb(id) {
+  delete state.templateEditor.thumbs[id];
+  delete state.templateEditor.fullTemplates[id];
+  delete _thumbImgCache[id];
+}
 
-  const paletteRows = tpl.palette.map((e, i) => `
-    <div class="tpl-pal-edit">
-      <input type="color" id="tpl-pal-color-${i}" value="${_paletteHex(e)}">
-      <span class="tpl-pal-idx">#${e.id}</span>
-      <span class="tpl-pal-role">${esc(_entryRoles(tpl, e.id))}</span>
-      ${adv ? `<span class="tpl-yuv">
-        <input type="number" id="tpl-pal-Y-${i}"  value="${e.Y}"  min="0" max="255" title="Y">
-        <input type="number" id="tpl-pal-Cr-${i}" value="${e.Cr}" min="0" max="255" title="Cr">
-        <input type="number" id="tpl-pal-Cb-${i}" value="${e.Cb}" min="0" max="255" title="Cb">
-      </span>` : ''}
-    </div>`).join('');
-
+function thumbCardHTML(m) {
+  const ed = state.templateEditor;
+  const sel = m.id === ed.selectedId ? ' selected' : '';
+  const active = m.id === (state.project.igMenuConfig && state.project.igMenuConfig.templateId);
+  const badge = m.readonly
+    ? '<span class="tpl-card-badge tcb-builtin">Built-in</span>'
+    : '<span class="tpl-card-badge tcb-custom">Custom</span>';
   return `
-    <div class="field"><label class="field-label">Name</label>
-      <input type="text" id="tpl-name" value="${esc(tpl.name)}" placeholder="Template name"></div>
-
-    <div class="field">
-      <label class="field-label" style="display:flex;justify-content:space-between;align-items:center">
-        <span>Palette</span>
-        <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;cursor:pointer">
-          <input type="checkbox" id="tpl-adv-palette" ${adv ? 'checked' : ''} style="width:13px;height:13px"> Edit YCbCr
-        </label>
-      </label>
-      <div class="tpl-pal-list">${paletteRows}</div>
-    </div>
-
-    <div class="field"><label class="field-label">Button geometry</label>
-      <div class="field-row" style="display:flex;gap:12px;flex-wrap:wrap">
-        <label style="font-size:11px;color:var(--text-secondary)">Width
-          <input type="number" id="tpl-geo-width"  value="${b.width}"  min="1" max="1920" style="width:80px"></label>
-        <label style="font-size:11px;color:var(--text-secondary)">Height
-          <input type="number" id="tpl-geo-height" value="${b.height}" min="1" max="1080" style="width:80px"></label>
-        <label style="font-size:11px;color:var(--text-secondary)">Gap
-          <input type="number" id="tpl-geo-gap"    value="${b.gap}"    min="0" max="400" style="width:70px"></label>
-        <label style="font-size:11px;color:var(--text-secondary)">Border
-          <input type="number" id="tpl-geo-border" value="${b.border}" min="0" max="40" style="width:70px"></label>
-      </div></div>
-
-    <div class="field"><label class="field-label">Font</label>
-      <div class="field-row" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-        <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:2px">File
-          <input type="text" value="${esc(tpl.font.file)}" disabled title="Custom fonts arrive in v1.14" style="width:140px"></label>
-        <label style="font-size:11px;color:var(--text-secondary);flex:1;min-width:160px">Size ratio (${tpl.font.sizeRatio})
-          <input type="range" id="tpl-font-size" min="0.3" max="0.9" step="0.05" value="${tpl.font.sizeRatio}" style="width:100%"></label>
-        <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:2px">Color
-          <input type="color" id="tpl-font-color" value="${_fontColorHex(tpl.font.color)}"></label>
-      </div></div>
-
-    <div class="field"><label class="field-label">Background</label>
-      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">
-        <label style="display:flex;gap:5px;align-items:center;font-size:12px;cursor:pointer">
-          <input type="radio" name="tpl-bg-type" id="tpl-bg-type-solid" value="solid" ${bg.type === 'solid' ? 'checked' : ''}> Solid</label>
-        <label style="display:flex;gap:5px;align-items:center;font-size:12px;cursor:pointer">
-          <input type="radio" name="tpl-bg-type" id="tpl-bg-type-image" value="image" ${bg.type === 'image' ? 'checked' : ''}> Image</label>
+    <div class="tpl-card${sel}" data-tpl-id="${esc(m.id)}" title="${esc(m.name)}">
+      <div class="tpl-card-thumb">
+        <canvas data-thumb-id="${esc(m.id)}" width="${THUMB_W}" height="${THUMB_H}"></canvas>
+        ${active ? '<span class="tpl-active-pill">● ACTIVE</span>' : ''}
       </div>
-      ${bg.type === 'solid' ? `
-        <div class="field-row" style="display:flex;gap:10px;align-items:center">
-          <span style="font-size:11px;color:var(--text-secondary)">Color</span>
-          <input type="color" id="tpl-bg-color" value="#${esc(bg.color)}">
-        </div>` : `
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-ghost btn-xs" id="tpl-bg-image">${bg.imagePath ? esc(bg.imagePath.split('/').pop()) : 'Pick image…'}</button>
-            ${bg.imagePath ? '<button class="btn btn-ghost btn-xs" id="tpl-bg-image-clear">&#x2715;</button>' : ''}
-          </div>
-          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-            <label style="font-size:11px;color:var(--text-secondary)">Fit
-              <select id="tpl-bg-fit" style="font-size:12px">
-                ${['cover', 'contain', 'stretch'].map(f => `<option value="${f}" ${bg.fit === f ? 'selected' : ''}>${f}</option>`).join('')}
-              </select></label>
-            <label style="font-size:11px;color:var(--text-secondary);display:flex;gap:6px;align-items:center">Letterbox / flatten color
-              <input type="color" id="tpl-bg-color" value="#${esc(bg.color)}"></label>
-          </div>
-        </div>`}
+      <div class="tpl-card-meta">
+        <span class="tpl-card-name">${esc(m.name)}</span>
+        ${badge}
+      </div>
     </div>`;
 }
 
-function templateDetailHTML(tpl, ro) {
-  const toolbar = ro
-    ? `<div class="tpl-toolbar"><button class="btn btn-primary btn-sm" id="tpl-duplicate">Duplicate to edit</button></div>`
-    : `<div class="tpl-toolbar">
-        <button class="btn btn-primary btn-sm" id="tpl-save" ${isDirty() ? '' : 'disabled'}>Save</button>
-        <button class="btn btn-secondary btn-sm" id="tpl-save-as">Save As…</button>
-        <button class="btn btn-ghost btn-sm" id="tpl-revert" ${isDirty() ? '' : 'disabled'}>Revert</button>
-        <button class="btn btn-danger btn-sm" id="tpl-delete">Delete</button>
-      </div>`;
-  const fields = ro ? templateReadonlyFields(tpl) : templateEditorFields(tpl);
+function thumbnailGridHTML() {
+  const t = state.templates;
+  if (!t.loaded) return `<div class="tpl-list-empty">Loading…</div>`;
+  const CATEGORY_ORDER = ['Solid', 'Modern', 'Bold', 'Wide Format', 'Image Background'];
+  const byCat = {};
+  for (const m of t.builtIn) {
+    const cat = (m.category && m.category.trim()) ? m.category : 'Other';
+    (byCat[cat] = byCat[cat] || []).push(m);
+  }
+  const cats = [
+    ...CATEGORY_ORDER.filter(c => byCat[c]),
+    ...Object.keys(byCat).filter(c => !CATEGORY_ORDER.includes(c)).sort(),
+  ];
+  let html = '';
+  for (const cat of cats) {
+    const items = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
+    html += `<div class="tpl-grid-group">${esc(cat)}</div><div class="tpl-grid">${items.map(thumbCardHTML).join('')}</div>`;
+  }
+  html += `<div class="tpl-grid-group">Custom</div>`;
+  html += t.user.length
+    ? `<div class="tpl-grid">${t.user.map(thumbCardHTML).join('')}</div>`
+    : `<div class="tpl-list-empty">No custom templates yet</div>`;
+  return html;
+}
+
+// ── Quick presets (Section E) ───────────────────────────────────────────────────
+const TPL_PRESETS = [
+  { id: 'dark-cinema', name: 'Dark Cinema', bg: '000000', normal: [150, 116, 40], selected: [224, 186, 86], text: [235, 235, 235], border: 3 },
+  { id: 'clean-white', name: 'Clean White', bg: 'f0f0f2', normal: [55, 58, 66], selected: [28, 30, 38], text: [240, 240, 245], border: 2 },
+  { id: 'deep-blue',   name: 'Deep Blue',   bg: '0a1733', normal: [22, 44, 110], selected: [64, 132, 255], text: [238, 242, 255], border: 2 },
+  { id: 'forest',      name: 'Forest',      bg: '0e2014', normal: [40, 82, 52],  selected: [150, 196, 150], text: [238, 245, 238], border: 2 },
+  { id: 'minimal',     name: 'Minimal',     bg: '000000', normal: [38, 38, 44],  selected: [96, 96, 108],  text: [230, 230, 235], border: 1 },
+];
+function presetsBarHTML() {
+  return `<div class="tpl-presets">
+    ${TPL_PRESETS.map(p => `<button class="tpl-preset-chip" data-preset="${p.id}" title="${esc(p.name)}">
+      <span class="tpl-preset-dot" style="background:#${p.bg}"></span>${esc(p.name)}
+    </button>`).join('')}
+  </div>`;
+}
+function applyPreset(p) {
+  updateDraft(t => {
+    t.background.type = 'solid';
+    t.background.color = p.bg;
+    const setEntry = (entry, rgb) => {
+      const e = t.palette.find(x => x.id === entry);
+      if (!e) return;
+      const yuv = window.discForge.color.rgbToYuv(rgb[0], rgb[1], rgb[2]);
+      e.Y = yuv.Y; e.Cr = yuv.Cr; e.Cb = yuv.Cb;
+    };
+    setEntry(t.button.borderEntry, p.text);
+    setEntry(t.button.normalFill.entry, p.normal);
+    setEntry(t.button.selectedFill.entry, p.selected);
+    t.button.border = p.border;
+  });
+}
+
+// ── Collapsible accordion sections (open/closed persisted in localStorage) ───────
+function accordionOpen(key) {
+  const v = localStorage.getItem('disc-forge-acc-' + key);
+  return v === null ? true : v === '1';   // default open
+}
+function accordionHTML(key, title, inner) {
+  const open = accordionOpen(key);
+  return `<div class="tpl-acc ${open ? 'open' : ''}">
+    <button class="tpl-acc-head" data-accordion="${key}">
+      <span class="tpl-acc-chevron">▸</span><span>${esc(title)}</span>
+    </button>
+    <div class="tpl-acc-body">${inner}</div>
+  </div>`;
+}
+
+// ── Reusable editor controls ─────────────────────────────────────────────────────
+function swatchRowHTML(id, label, hex) {
+  return `<div class="tpl-ctl-row">
+    <span class="tpl-ctl-label">${esc(label)}</span>
+    <label class="tpl-swatch-btn" style="--sw:${hex}">
+      <span class="tpl-swatch-fill"></span>
+      <input type="color" id="${id}" value="${hex}">
+    </label>
+  </div>`;
+}
+function sliderRowHTML(id, label, min, max, step, value, display) {
+  return `<div class="tpl-slider-row">
+    <span class="tpl-ctl-label">${esc(label)}</span>
+    <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
+    <span class="tpl-slider-pill">${esc(display)}</span>
+  </div>`;
+}
+
+// Read-only summary table shown below the preview for built-in templates.
+function builtinSummaryHTML(tpl) {
+  const bg = tpl.background;
+  const rows = [
+    ['Background', bg.type === 'solid' ? `Solid #${esc(bg.color)}` : `Image (${esc(bg.fit)})`],
+    ['Button size', `${tpl.button.width} × ${tpl.button.height} px`],
+    ['Gap / border', `${tpl.button.gap} px / ${tpl.button.border} px`],
+    ['Font', `${esc((tpl.font && tpl.font.family) || tpl.font.file)} · ${Math.round((tpl.font.sizeRatio || 0.5) * 100)}%`],
+  ];
+  return `<div class="tpl-summary-card">
+    <div class="tpl-summary-title">Template details</div>
+    <table class="tpl-summary-table">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+  </div>`;
+}
+
+// Active-template status line (Part 5): which template the disc will actually use.
+function activeStatusHTML() {
+  const ed = state.templateEditor;
+  const activeId = state.project.igMenuConfig && state.project.igMenuConfig.templateId;
+  const activeMeta = templateMeta(activeId);
+  const isActive = activeId === ed.selectedId;
+  return `<div class="tpl-active-bar">
+    <span class="tpl-active-label">Active template: <b>${esc(activeMeta ? activeMeta.name : '—')}</b></span>
+    <button class="btn ${isActive ? 'btn-ghost' : 'btn-secondary'} btn-sm" id="tpl-use-active" ${isActive ? 'disabled' : ''}>
+      ${isActive ? '✓ In use' : 'Use this template'}
+    </button>
+  </div>`;
+}
+
+// Pulse the "Duplicate to edit" button once, the first time a built-in is viewed.
+const _pulsedBuiltins = new Set();
+function _pulseBuiltin(id) { if (_pulsedBuiltins.has(id)) return false; _pulsedBuiltins.add(id); return true; }
+
+// Full design editor (custom/user templates) — Sections A–E (Part 3).
+function templateEditorHTML(tpl) {
+  const ed = state.templateEditor;
+  const b = tpl.button, bg = tpl.background;
+  const palHex = (entry) => {
+    const e = tpl.palette.find(x => x.id === entry);
+    return e ? _paletteHex(e) : '#000000';
+  };
+  const fonts = availableFonts();
+  const curFont = (tpl.font && tpl.font.family) || (fonts[0] || 'Helvetica Neue');
+  const filter = (ed.fontFilter || '').toLowerCase();
+  const shown = fonts.filter(f => !filter || f.toLowerCase().includes(filter));
+  const fontOpts = shown.map(f =>
+    `<option value="${esc(f)}" ${f === curFont ? 'selected' : ''} style="font-family:'${esc(f)}'">${esc(f)}</option>`).join('')
+    || `<option selected>${esc(curFont)}</option>`;
+
+  // SECTION A — Background
+  const bgSection = `
+    <div class="tpl-segmented">
+      <button class="tpl-seg ${bg.type === 'solid' ? 'on' : ''}" data-bg-type="solid">Solid Color</button>
+      <button class="tpl-seg ${bg.type === 'image' ? 'on' : ''}" data-bg-type="image">Image</button>
+    </div>
+    ${bg.type === 'solid' ? `
+      <label class="tpl-swatch-wide" style="--sw:#${esc(bg.color)}">
+        <span class="tpl-swatch-fill"></span>
+        <span class="tpl-swatch-text">#${esc(bg.color)}</span>
+        <input type="color" id="tpl-bg-color2" value="#${esc(bg.color)}">
+      </label>` : `
+      <div class="tpl-dropzone" id="tpl-bg-drop">
+        <div class="tpl-dz-icon">🖼</div>
+        <div class="tpl-dz-text">Drop an image or click to browse</div>
+        <div class="tpl-dz-hint">PNG · JPG · WEBP</div>
+      </div>
+      ${bg.imagePath ? `
+      <div class="tpl-img-loaded">
+        <div class="tpl-img-thumb" id="tpl-bg-thumb"></div>
+        <span class="tpl-img-name">${esc(_bgImageName(bg.imagePath))}</span>
+        <button class="tpl-img-clear" id="tpl-bg-image-clear2" title="Remove image">✕</button>
+      </div>` : ''}
+      <div class="tpl-ctl-row" style="margin-top:10px">
+        <span class="tpl-ctl-label">Fit</span>
+        <select id="tpl-bg-fit2" style="width:auto">${['cover', 'contain', 'stretch'].map(f => `<option value="${f}" ${bg.fit === f ? 'selected' : ''}>${f}</option>`).join('')}</select>
+      </div>`}`;
+
+  // SECTION B — Buttons
+  const btnSection = `
+    <div class="tpl-sub-label">Colors</div>
+    ${swatchRowHTML('tpl-normal-color', 'Normal', palHex(b.normalFill.entry))}
+    ${swatchRowHTML('tpl-sel-color', 'Selected', palHex(b.selectedFill.entry))}
+    ${swatchRowHTML('tpl-border-color', 'Border / text', palHex(b.borderEntry))}
+    <div class="tpl-sub-label">Size &amp; spacing</div>
+    ${sliderRowHTML('tpl-w', 'Width', 200, 1600, 10, b.width, b.width + 'px')}
+    ${sliderRowHTML('tpl-h', 'Height', 40, 200, 2, b.height, b.height + 'px')}
+    ${sliderRowHTML('tpl-gap', 'Gap', 10, 80, 2, b.gap, b.gap + 'px')}
+    <div class="tpl-sub-label">Border</div>
+    ${sliderRowHTML('tpl-border', 'Thickness', 0, 12, 1, b.border, b.border + 'px')}`;
+
+  // SECTION C — Typography
+  const fontPct = Math.round((tpl.font.sizeRatio || 0.5) * 100) + '%';
+  const typoSection = `
+    <div class="tpl-ctl-col"><span class="tpl-ctl-label">Font family</span>
+      <input type="text" id="tpl-font-search" class="tpl-font-search" placeholder="Search fonts…" value="${esc(ed.fontFilter || '')}">
+      <select id="tpl-font-family" class="tpl-font-select" style="font-family:'${esc(curFont)}'">${fontOpts}</select>
+    </div>
+    ${sliderRowHTML('tpl-font-size2', 'Text size', 0.2, 0.9, 0.05, tpl.font.sizeRatio, fontPct)}
+    ${swatchRowHTML('tpl-label-color', 'Label color', palHex(b.borderEntry))}`;
+
+  // SECTION D — Template meta
+  const metaSection = `
+    <div class="tpl-ctl-col"><span class="tpl-ctl-label">Template name</span>
+      <input type="text" id="tpl-name2" value="${esc(tpl.name)}" placeholder="Template name"></div>
+    <div class="tpl-ctl-col"><span class="tpl-ctl-label">Description</span>
+      <textarea id="tpl-desc" placeholder="Describe this template…" style="min-height:56px">${esc(tpl.description || '')}</textarea></div>
+    <div class="tpl-meta-actions">
+      <button class="btn btn-ghost btn-sm" id="tpl-revert" ${isDirty() ? '' : 'disabled'}>Revert to saved</button>
+      <button class="btn btn-primary btn-sm" id="tpl-save" ${(isDirty() || ed.savedFlash) ? '' : 'disabled'}>${ed.savedFlash ? 'Saved ✓' : 'Save template'}</button>
+    </div>
+    <button class="btn btn-danger btn-sm" id="tpl-delete" style="margin-top:10px">Delete template</button>`;
+
   return `
-    <div class="tpl-detail-head">
+    ${presetsBarHTML()}
+    ${accordionHTML('bg', 'Background', bgSection)}
+    ${accordionHTML('buttons', 'Buttons', btnSection)}
+    ${accordionHTML('type', 'Typography', typoSection)}
+    ${accordionHTML('meta', 'Template', metaSection)}`;
+}
+
+function pageTemplates() {
+  const ed  = state.templateEditor;
+  const tpl = ed.draft;
+  const ro  = isReadonly(ed.selectedId);
+
+  const head = tpl ? `
+    <div class="tpl-center-head">
       <div>
         <div class="tpl-detail-name">${esc(tpl.name)}${(!ro && isDirty()) ? ' •' : ''}</div>
         <div class="tpl-detail-desc">${esc(tpl.description || '')}</div>
       </div>
-      <span class="badge ${ro ? 'badge-blue' : 'badge-green'}">${ro ? 'Built-in · read-only' : 'Custom'}</span>
-    </div>
-    ${toolbar}
+      <span class="badge ${ro ? 'badge-blue' : 'badge-green'}">${ro ? 'Built-in' : 'Custom'}</span>
+    </div>` : '';
+
+  const center = tpl ? `
+    ${head}
     ${previewHTML()}
-    ${fields}`;
-}
-
-function pageTemplates() {
-  const ed = state.templateEditor;
-  const t  = state.templates;
-
-  const row = (m) => `
-    <div class="tpl-list-item ${m.id === ed.selectedId ? 'active' : ''}" data-tpl-id="${esc(m.id)}">
-      <span class="tpl-list-name">${esc(m.name)}</span>
-      <span class="badge ${m.readonly ? 'badge-blue' : 'badge-green'}">${m.readonly ? 'Built-in' : 'Custom'}</span>
-    </div>`;
-
-  let listHTML = '';
-  if (!t.loaded) {
-    listHTML = `<div class="tpl-list-empty">Loading…</div>`;
-  } else {
-    // Group built-in templates by category. Known categories appear in this
-    // order; any unrecognized category is appended alphabetically after them.
-    const CATEGORY_ORDER = ['Solid', 'Modern', 'Bold', 'Wide Format', 'Image Background'];
-    const byCat = {};
-    for (const m of t.builtIn) {
-      const cat = (m.category && m.category.trim()) ? m.category : 'Other';
-      (byCat[cat] = byCat[cat] || []).push(m);
-    }
-    const cats = [
-      ...CATEGORY_ORDER.filter(c => byCat[c]),
-      ...Object.keys(byCat).filter(c => !CATEGORY_ORDER.includes(c)).sort(),
-    ];
-    for (const cat of cats) {
-      const items = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
-      listHTML += `<div class="tpl-list-group">${esc(cat)}</div>` + items.map(row).join('');
-    }
-    // User/custom templates always live in a single group at the bottom.
-    listHTML += `<div class="tpl-list-group">Custom</div>`;
-    listHTML += t.user.length ? t.user.map(row).join('') : `<div class="tpl-list-empty">No custom templates yet</div>`;
-  }
-
-  const tpl = ed.draft;
-  const ro  = isReadonly(ed.selectedId);
-  const detail = tpl
-    ? templateDetailHTML(tpl, ro)
+    ${activeStatusHTML()}
+    ${ro ? `
+      <div class="tpl-builtin-cta">
+        <button class="btn tpl-duplicate-btn${_pulseBuiltin(ed.selectedId) ? ' tpl-pulse' : ''}" id="tpl-duplicate">✎ Duplicate to edit</button>
+        <span class="tpl-builtin-hint">Built-in templates are read-only. Duplicate one to customize its colors, fonts, and layout.</span>
+      </div>
+      ${builtinSummaryHTML(tpl)}` : ''}`
     : `<div class="empty-state"><div class="empty-state-icon">🖌</div><div class="empty-state-text">Select a template to view it</div></div>`;
+
+  const showEditor = !!tpl && !ro;
+  const right = showEditor ? templateEditorHTML(tpl) : '';
 
   return `
     <div class="page-header"><div class="page-header-left">
-      <div class="page-title">Menu Templates</div>
-      <div class="page-subtitle">Customize the look of interactive disc menus. Built-in templates are read-only — duplicate one to edit.</div>
+      <div class="page-title">Menu Designer</div>
+      <div class="page-subtitle">Design the look of your interactive disc menu — pick a template, then customize it.</div>
     </div></div>
-    <div class="tpl-layout">
-      <div class="tpl-list card">${listHTML}</div>
-      <div class="tpl-editor card">${detail}</div>
+    <div class="menus-layout ${showEditor ? 'has-editor' : ''}">
+      <div class="menus-browser">${thumbnailGridHTML()}</div>
+      <div class="menus-center">${center}</div>
+      <div class="menus-editor ${showEditor ? 'open' : ''}">
+        <div class="menus-editor-inner card">${right}</div>
+      </div>
     </div>`;
 }
 
@@ -1988,70 +2172,117 @@ function attachListeners() {
   document.getElementById('ig-edit-templates')?.addEventListener('click', () =>
     setState({ tab: 'templates' }));
 
-  // Templates tab — list selection
-  document.querySelectorAll('.tpl-list-item').forEach(el =>
+  // ── Menus tab (v1.16.0) ─────────────────────────────────────────────────────
+  // Thumbnail browser cards
+  document.querySelectorAll('.tpl-card').forEach(el =>
     el.addEventListener('click', () => selectTemplate(el.dataset.tplId)));
 
-  // Templates tab — editor (Phase 4B)
+  // Built-in: Duplicate to edit + shared name-entry modal
   document.getElementById('tpl-duplicate')?.addEventListener('click', duplicateSelected);
   document.getElementById('tpl-name-modal-cancel')?.addEventListener('click', cancelNameModal);
   document.getElementById('tpl-name-modal-ok')?.addEventListener('click', confirmNameModal);
-  document.getElementById('tpl-save')?.addEventListener('click', saveTemplate);
-  document.getElementById('tpl-save-as')?.addEventListener('click', () => openNameModal('saveAs'));
-  document.getElementById('tpl-revert')?.addEventListener('click', revertTemplate);
-  document.getElementById('tpl-delete')?.addEventListener('click', deleteTemplate);
-  document.getElementById('tpl-adv-palette')?.addEventListener('change', e => {
-    state.templateEditor.advancedPalette = e.target.checked; render();
-  });
-  document.getElementById('tpl-name')?.addEventListener('input', e =>
-    updateDraft(t => { t.name = e.target.value; }));
 
-  // Palette: RGB color picker + optional YCbCr advanced inputs (per entry).
-  (state.templateEditor.draft?.palette || []).forEach((_, i) => {
-    document.getElementById(`tpl-pal-color-${i}`)?.addEventListener('input', e => {
-      const [r, g, b] = window.discForge.color.hexToRgb(e.target.value);
-      const yuv = window.discForge.color.rgbToYuv(r, g, b);
-      updateDraft(t => { t.palette[i].Y = yuv.Y; t.palette[i].Cr = yuv.Cr; t.palette[i].Cb = yuv.Cb; });
-    });
-    ['Y', 'Cr', 'Cb'].forEach(ch => {
-      document.getElementById(`tpl-pal-${ch}-${i}`)?.addEventListener('input', e => {
-        const v = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
-        updateDraft(t => { t.palette[i][ch] = v; });
-      });
-    });
-  });
+  // Active-template indicator (Part 5)
+  document.getElementById('tpl-use-active')?.addEventListener('click', () =>
+    setPrj({ igMenuConfig: { ...state.project.igMenuConfig, templateId: state.templateEditor.selectedId } }));
 
-  // Geometry
-  const geo = (id, key, lo, hi) => document.getElementById(id)?.addEventListener('input', e => {
+  // Collapsible accordions — persist open/closed in localStorage
+  document.querySelectorAll('[data-accordion]').forEach(el =>
+    el.addEventListener('click', () => {
+      const key = el.dataset.accordion;
+      localStorage.setItem('disc-forge-acc-' + key, accordionOpen(key) ? '0' : '1');
+      render();
+    }));
+
+  // Quick presets (Section E)
+  document.querySelectorAll('[data-preset]').forEach(el =>
+    el.addEventListener('click', () => {
+      const p = TPL_PRESETS.find(x => x.id === el.dataset.preset);
+      if (!p) return;
+      if (isDirty() && !window.confirm(`Apply the "${p.name}" preset? This overwrites your current unsaved changes.`)) return;
+      applyPreset(p);
+    }));
+
+  // SECTION A — Background
+  document.querySelectorAll('[data-bg-type]').forEach(el =>
+    el.addEventListener('click', () => updateDraft(t => { t.background.type = el.dataset.bgType; })));
+  document.getElementById('tpl-bg-color2')?.addEventListener('input', e =>
+    updateDraft(t => { t.background.color = e.target.value.replace(/^#/, ''); }));
+  document.getElementById('tpl-bg-fit2')?.addEventListener('change', e =>
+    updateDraft(t => { t.background.fit = e.target.value; }));
+  // The absolute path (string) is stored — validateTemplate + the disc builder
+  // both require a string, not the picker's {path,name} object.
+  const _setBgImage = (p) => { if (p) updateDraft(t => { t.background.imagePath = p; }); };
+  const _dz = document.getElementById('tpl-bg-drop');
+  if (_dz) {
+    _dz.addEventListener('click', async () => {
+      const r = await pickFile([{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]);
+      if (r) _setBgImage(r.path);
+    });
+    _dz.addEventListener('dragover', e => { e.preventDefault(); _dz.classList.add('drag'); });
+    _dz.addEventListener('dragleave', () => _dz.classList.remove('drag'));
+    _dz.addEventListener('drop', e => {
+      e.preventDefault(); _dz.classList.remove('drag');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f && f.path) _setBgImage(f.path);
+    });
+  }
+  document.getElementById('tpl-bg-image-clear2')?.addEventListener('click', () =>
+    updateDraft(t => { t.background.imagePath = null; }));
+  // Paint the loaded background-image thumbnail (via the main-process data URL).
+  (async () => {
+    const bg = state.templateEditor.draft && state.templateEditor.draft.background;
+    const thumb = document.getElementById('tpl-bg-thumb');
+    if (thumb && bg && bg.type === 'image' && bg.imagePath) {
+      try {
+        const url = await window.discForge.getImageDataUrl(_bgImagePath(bg.imagePath));
+        if (url) thumb.style.backgroundImage = `url('${url}')`;
+      } catch (_) {}
+    }
+  })();
+
+  // SECTION B — Button colors (palette entries) + size/border sliders
+  const _setEntryColor = (entry, hex) => {
+    const [r, g, b] = window.discForge.color.hexToRgb(hex);
+    const yuv = window.discForge.color.rgbToYuv(r, g, b);
+    updateDraft(t => { const e = t.palette.find(x => x.id === entry); if (e) { e.Y = yuv.Y; e.Cr = yuv.Cr; e.Cb = yuv.Cb; } });
+  };
+  const _draftBtn = () => state.templateEditor.draft.button;
+  document.getElementById('tpl-normal-color')?.addEventListener('input', e => _setEntryColor(_draftBtn().normalFill.entry, e.target.value));
+  document.getElementById('tpl-sel-color')?.addEventListener('input', e => _setEntryColor(_draftBtn().selectedFill.entry, e.target.value));
+  document.getElementById('tpl-border-color')?.addEventListener('input', e => _setEntryColor(_draftBtn().borderEntry, e.target.value));
+  document.getElementById('tpl-label-color')?.addEventListener('input', e => _setEntryColor(_draftBtn().borderEntry, e.target.value));
+  const _btnSlider = (id, key, lo, hi) => document.getElementById(id)?.addEventListener('input', e => {
     const v = Math.max(lo, Math.min(hi, parseInt(e.target.value, 10) || lo));
     updateDraft(t => { t.button[key] = v; });
   });
-  geo('tpl-geo-width', 'width', 1, 1920);
-  geo('tpl-geo-height', 'height', 1, 1080);
-  geo('tpl-geo-gap', 'gap', 0, 400);
-  geo('tpl-geo-border', 'border', 0, 40);
+  _btnSlider('tpl-w', 'width', 200, 1600);
+  _btnSlider('tpl-h', 'height', 40, 200);
+  _btnSlider('tpl-gap', 'gap', 10, 80);
+  _btnSlider('tpl-border', 'border', 0, 12);
 
-  // Font
-  document.getElementById('tpl-font-size')?.addEventListener('input', e =>
-    updateDraft(t => { t.font.sizeRatio = parseFloat(e.target.value); }));
-  document.getElementById('tpl-font-color')?.addEventListener('input', e =>
-    updateDraft(t => { t.font.color = e.target.value; }));
-
-  // Background
-  document.getElementById('tpl-bg-type-solid')?.addEventListener('change', () =>
-    updateDraft(t => { t.background.type = 'solid'; }));
-  document.getElementById('tpl-bg-type-image')?.addEventListener('change', () =>
-    updateDraft(t => { t.background.type = 'image'; }));
-  document.getElementById('tpl-bg-color')?.addEventListener('input', e =>
-    updateDraft(t => { t.background.color = e.target.value.replace(/^#/, ''); }));
-  document.getElementById('tpl-bg-fit')?.addEventListener('change', e =>
-    updateDraft(t => { t.background.fit = e.target.value; }));
-  document.getElementById('tpl-bg-image')?.addEventListener('click', async () => {
-    const r = await pickFile([{ name: 'Image', extensions: ['png', 'jpg', 'jpeg'] }]);
-    if (r) updateDraft(t => { t.background.imagePath = r; });
+  // SECTION C — Typography
+  document.getElementById('tpl-font-search')?.addEventListener('input', e => {
+    state.templateEditor.fontFilter = e.target.value;
+    _focusedId = 'tpl-font-search'; _focusedPos = e.target.selectionStart;
+    render();
   });
-  document.getElementById('tpl-bg-image-clear')?.addEventListener('click', () =>
-    updateDraft(t => { t.background.imagePath = null; }));
+  document.getElementById('tpl-font-family')?.addEventListener('change', e =>
+    updateDraft(t => { t.font.family = e.target.value; }));
+  document.getElementById('tpl-font-size2')?.addEventListener('input', e =>
+    updateDraft(t => { t.font.sizeRatio = parseFloat(e.target.value); }));
+
+  // SECTION D — Template meta
+  document.getElementById('tpl-name2')?.addEventListener('input', e =>
+    updateDraft(t => { t.name = e.target.value; }));
+  document.getElementById('tpl-desc')?.addEventListener('input', e =>
+    updateDraft(t => { t.description = e.target.value; }));
+  document.getElementById('tpl-revert')?.addEventListener('click', revertTemplate);
+  document.getElementById('tpl-save')?.addEventListener('click', saveTemplate);
+  document.getElementById('tpl-delete')?.addEventListener('click', deleteTemplate);
+
+  // Lazily render any missing browser thumbnails once the canvases exist.
+  if (state.tab === 'templates') ensureThumbnails();
   document.getElementById('splash-duration')?.addEventListener('change', e => setPrj({ splashDuration: parseInt(e.target.value, 10) }));
   document.getElementById('splash-color')?.addEventListener('input',   e => setPrj({ splashColor: e.target.value.slice(1) }));
   document.getElementById('pick-splash-png')?.addEventListener('click', async () => {
