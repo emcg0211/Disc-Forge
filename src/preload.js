@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('discForge', {
   },
   // Core
   getAppVersion:    ()        => ipcRenderer.invoke('app-version'),
+  getImageDataUrl:  (fp)      => ipcRenderer.invoke('image-data-url', fp),
   getHomeDir:       ()        => ipcRenderer.invoke('get-home-dir'),
   checkTools:       ()        => ipcRenderer.invoke('check-tools'),
   openFileDialog:   (opts)    => ipcRenderer.invoke('open-file-dialog', opts),

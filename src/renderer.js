@@ -163,6 +163,7 @@ async function boot() {
   const outputDir = homeDir + '/Desktop';
   const appVersion = await window.discForge.getAppVersion().catch(() => '');
   setState({ tools, appVersion, project: { ...state.project, outputDir } });
+  ensureMenuFont();  // warm the menu-preview font (non-blocking)
 
   // Load installed system fonts
   try {
@@ -472,6 +473,22 @@ function probeDisplay() {
   return `<div class="probe-panel">${items.map(([k,v])=>`<div class="probe-item"><div class="probe-key">${k}</div><div class="probe-val">${esc(v)}</div></div>`).join('')}</div>`;
 }
 
+// ── v1.13.0 Menu Templates ──────────────────────────────────────────────────────
+// Populate the Menus tab list + build-flow dropdown, then select a template (which
+// triggers the live preview). (Restored in v1.15.1 — this was accidentally removed
+// by the v1.15.1 tab-cleanup deletion, which left the Menus list stuck on "Loading…".)
+async function loadTemplates() {
+  const r = await window.discForge.templateList();
+  if (!r || !r.ok) { appendLog('[Templates] list failed: ' + (r && r.error)); return; }
+  state.templates = { builtIn: r.builtIn || [], user: r.user || [], loaded: true };
+  const all = [...state.templates.builtIn, ...state.templates.user];
+  if (!all.find(t => t.id === state.templateEditor.selectedId)) {
+    state.templateEditor.selectedId = all[0] ? all[0].id : 'classic';
+  }
+  render();
+  selectTemplate(state.templateEditor.selectedId);
+}
+
 function templateMeta(id) {
   return [...(state.templates.builtIn || []), ...(state.templates.user || [])].find(t => t.id === id) || null;
 }
@@ -510,26 +527,24 @@ async function refreshPreviews() {
     return;
   }
   ed.error = null;
-  const [selR, norR] = await Promise.all([
-    window.discForge.templatePreviewButton({ template: tpl, state: 'selected', label: 'Play Episode 1' }),
-    window.discForge.templatePreviewButton({ template: tpl, state: 'normal',   label: 'Play Episode 2' }),
-  ]);
+  // Render the isolated Normal/Selected button states client-side (browser canvas)
+  // — no native module / IPC, so it works on every machine.
+  let selected = null, normal = null;
+  try {
+    await ensureMenuFont();
+    selected = renderButtonPreviewLocal(tpl, tpl.button.selectedFill, 'Play Episode 1');
+    normal   = renderButtonPreviewLocal(tpl, tpl.button.normalFill,   'Play Episode 2');
+  } catch (_) { /* leave nulls — the full-screen preview below is the primary view */ }
   // Keep any prior full-screen menu image while the heavier render re-runs.
-  ed.previews = {
-    ...ed.previews,
-    selected: (selR && selR.ok) ? selR.pngBase64 : null,
-    normal:   (norR && norR.ok) ? norR.pngBase64 : null,
-  };
-  if (selR && !selR.ok) ed.error = selR.error;
+  ed.previews = { ...ed.previews, selected, normal };
   render();
   // The full-screen menu scene is heavier — render it on its own 400ms debounce.
   scheduleMenuPreview();
 }
 
-// The full-screen 1920×1080 menu preview is more expensive than the button PNGs
-// (whole-frame canvas + 3 button bitmaps), so it gets a longer 400ms debounce
-// and a "Rendering…" caption while in flight. A sequence guard drops stale
-// results so the last edit always wins.
+// The full-screen 1920×1080 menu preview is heavier than the button crops, so it
+// gets a longer 400ms debounce and a "Rendering…" caption while in flight. A
+// sequence guard drops stale results so the last edit always wins.
 let _menuTimer = null;
 let _menuSeq = 0;
 function scheduleMenuPreview() {
@@ -543,11 +558,139 @@ async function renderMenuPreview() {
   const tpl = ed.draft;
   if (!tpl || ed.error) { ed.menuRendering = false; render(); return; }
   const seq = ++_menuSeq;
-  const r = await window.discForge.templatePreviewMenu({ template: tpl });
+  let dataUrl = null;
+  try {
+    dataUrl = await renderMenuPreviewLocal(tpl);
+  } catch (_) {
+    dataUrl = null;  // never leave the pane stuck — fall back to the button states
+  }
   if (seq !== _menuSeq) return;  // a newer render started — drop this stale result
   ed.menuRendering = false;
-  ed.previews = { ...ed.previews, menu: (r && r.ok) ? r.pngBase64 : null };
+  ed.previews = { ...ed.previews, menu: dataUrl };
   render();
+}
+
+// ── Client-side menu preview rendering ──────────────────────────────────────────
+// The preview is drawn entirely in the renderer with the browser's built-in
+// Canvas, so it never depends on the main-process native node-canvas module —
+// which macOS Gatekeeper blocks on unsigned, downloaded (quarantined) apps,
+// leaving the old IPC-based preview hung on "Rendering…". This mirrors the disc
+// menu: background (image-cover or solid colour) + buttons, with the label drawn
+// in the border/text palette colour (matching how the disc quantises white text).
+let _menuFontPromise = null;
+function ensureMenuFont() {
+  if (_menuFontPromise) return _menuFontPromise;
+  _menuFontPromise = (async () => {
+    try {
+      if (typeof FontFace === 'undefined' || !document.fonts) return false;
+      const face = new FontFace('MenuFont', "url('assets/fonts/MenuFont.ttf')");
+      await face.load();
+      document.fonts.add(face);
+      return true;
+    } catch (_) { return false; }  // fall back to a system font
+  })();
+  return _menuFontPromise;
+}
+
+function _yuvCss(e) {
+  const [r, g, b] = window.discForge.color.yuvToRgb(e.Y, e.Cr, e.Cb);
+  return `rgb(${r},${g},${b})`;
+}
+function _fillCss(tpl, fill) {
+  if (fill && Array.isArray(fill.rgb)) return `rgb(${fill.rgb[0]},${fill.rgb[1]},${fill.rgb[2]})`;
+  const e = tpl.palette.find(p => p.id === (fill && fill.entry));
+  return e ? _yuvCss(e) : '#888';
+}
+
+// Draw one button (fill + border + centered label) at (x,y) on ctx.
+function drawTemplateButton(ctx, tpl, fill, label, x, y) {
+  const b = tpl.button;
+  const w = b.width, h = b.height, border = b.border || 0;
+  const be = tpl.palette.find(e => e.id === b.borderEntry) || tpl.palette[1] || tpl.palette[0];
+  const beCss = _yuvCss(be);
+  ctx.fillStyle = _fillCss(tpl, fill);
+  ctx.fillRect(x, y, w, h);
+  if (border > 0) {  // 4 inset bars so the thickness matches the disc
+    ctx.fillStyle = beCss;
+    ctx.fillRect(x, y, w, border);
+    ctx.fillRect(x, y + h - border, w, border);
+    ctx.fillRect(x, y, border, h);
+    ctx.fillRect(x + w - border, y, border, h);
+  }
+  // On the disc, white label text quantises to the border/text entry — use it here.
+  const fontSize = Math.max(1, Math.round((h - border * 2) * ((tpl.font && tpl.font.sizeRatio) || 0.5)));
+  ctx.fillStyle = beCss;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${fontSize}px MenuFont, "Helvetica Neue", Arial, sans-serif`;
+  if (label) ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+}
+
+function renderButtonPreviewLocal(tpl, fill, label) {
+  const b = tpl.button;
+  const cv = document.createElement('canvas');
+  cv.width = b.width; cv.height = b.height;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  drawTemplateButton(ctx, tpl, fill, label, 0, 0);
+  return cv.toDataURL('image/png');
+}
+
+function _loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const t = setTimeout(() => reject(new Error('image timeout')), 5000);
+    img.onload  = () => { clearTimeout(t); resolve(img); };
+    img.onerror = () => { clearTimeout(t); reject(new Error('image error')); };
+    img.src = src;
+  });
+}
+
+async function renderMenuPreviewLocal(tpl) {
+  const FW = 1920, FH = 1080;
+  const cv = document.createElement('canvas');
+  cv.width = FW; cv.height = FH;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  await ensureMenuFont();
+
+  // Background: a real image (drawn to cover) wins; else the solid colour. The
+  // image is fetched as a data: URL via the main process so the canvas isn't
+  // tainted (a file:// image would make toDataURL throw).
+  const bg = tpl.background || {};
+  const imgPath = (bg.type === 'image' && bg.imagePath)
+    ? (typeof bg.imagePath === 'string' ? bg.imagePath : (bg.imagePath.path || '')) : '';
+  let drewImage = false;
+  if (imgPath) {
+    try {
+      const dataUrl = await window.discForge.getImageDataUrl(imgPath);
+      if (dataUrl) {
+        const img = await _loadImage(dataUrl);
+        const scale = Math.max(FW / img.width, FH / img.height);
+        const dw = img.width * scale, dh = img.height * scale;
+        ctx.drawImage(img, (FW - dw) / 2, (FH - dh) / 2, dw, dh);
+        drewImage = true;
+      }
+    } catch (_) { /* fall through to solid */ }
+  }
+  if (!drewImage) {
+    ctx.fillStyle = bg.color && /^#/.test(bg.color) ? bg.color : ('#' + (bg.color || '000000'));
+    ctx.fillRect(0, 0, FW, FH);
+  }
+
+  const b = tpl.button;
+  const totalH = 3 * b.height + 2 * b.gap;
+  const startY = Math.round((FH - totalH) / 2);
+  const startX = Math.round((FW - b.width) / 2);
+  const samples = [
+    [b.normalFill,   'Play Movie'],
+    [b.selectedFill, 'Scene Selection'],
+    [b.normalFill,   'Special Features'],
+  ];
+  samples.forEach(([fill, label], i) => {
+    drawTemplateButton(ctx, tpl, fill, label, startX, startY + i * (b.height + b.gap));
+  });
+  return cv.toDataURL('image/png');
 }
 
 // Apply an edit to the working draft, keep fill colors consistent with the
@@ -687,7 +830,7 @@ function previewHTML() {
   const caption = ed.menuRendering
     ? 'Rendering…'
     : (menu ? 'Preview — 3 sample buttons, center of 1920×1080 frame'
-            : 'Full-screen preview unavailable — see button states below');
+            : 'Full-screen preview unavailable on this Mac — the disc menu will still build correctly. See button states below.');
   const btn = (src, label) => `<div class="tpl-preview-col">
       <span class="tpl-preview-label">${label}</span>
       ${src ? `<img class="tpl-preview-img tpl-preview-img-sm" src="${src}" alt="${label} button preview">`

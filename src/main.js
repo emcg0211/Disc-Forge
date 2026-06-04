@@ -249,6 +249,20 @@ ipcMain.handle('get-home-dir', async () => os.homedir());
 // package.json via Electron, so it can never drift out of sync again.
 ipcMain.handle('app-version', async () => app.getVersion());
 
+// Read a local image file and return it as a data: URL. Used by the renderer's
+// client-side menu preview to draw a background image without tainting the canvas
+// (a file:// image would make toDataURL throw). Returns null on any failure.
+ipcMain.handle('image-data-url', async (_, filePath) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    const ext = path.extname(filePath).toLowerCase();
+    const mime = { '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
+                   '.webp':'image/webp', '.gif':'image/gif', '.bmp':'image/bmp' }[ext] || 'image/png';
+    const b64 = fs.readFileSync(filePath).toString('base64');
+    return `data:${mime};base64,${b64}`;
+  } catch (_) { return null; }
+});
+
 // Grant local font access permission
 app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
