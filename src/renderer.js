@@ -105,11 +105,22 @@ let state = {
       buttonHighlightColor: '#ff8800', fontFamily: 'MenuFont',
       templateId: 'classic',   // v1.13.0 — drives the menu look (see Templates tab)
     },
+    // ── v1.19.0 chapter selection sub-menu ──────────────────────────────────────
+    // Auto-enabled when chapters exist; drives the Scene Selection screen. The
+    // disc-pipeline wiring is deferred (see PR notes) — this is the project model +
+    // designer UI. templateId/positions null = reuse the main menu's.
+    chapterMenu: {
+      enabled: true,            // effective only when chapters.length > 0
+      templateId: null,         // null = use the main menu (igMenuConfig) template
+      positions: null,          // null = auto-layout (vertical stack ≤6 / 2-col grid 7+)
+      label: 'Scene Selection', // label of the button that opens it from the main menu
+    },
   },
   // ── v1.13.0 menu templates ────────────────────────────────────────────────
   templates: { builtIn: [], user: [], loaded: false },
   templateEditor: {
     selectedId: 'classic',
+    activeMenu: 'main', // v1.19.0 — 'main' | 'chapters' (which menu the designer previews/edits)
     draft: null,        // working copy (object) of the selected template
     baseline: null,     // pristine copy for Revert / dirty detection
     error: null,        // validateTemplate error surfaced inline
@@ -579,7 +590,10 @@ async function renderMenuPreview() {
   const seq = ++_menuSeq;
   let dataUrl = null;
   try {
-    dataUrl = await renderMenuPreviewLocal(tpl);
+    // v1.19.0: the menu switcher chooses which menu the TV bezel previews.
+    dataUrl = (ed.activeMenu === 'chapters')
+      ? await renderChapterMenuPreviewLocal(tpl, state.project.chapters)
+      : await renderMenuPreviewLocal(tpl);
   } catch (_) {
     dataUrl = null;  // never leave the pane stuck — fall back to the button states
   }
@@ -736,6 +750,24 @@ async function renderMenuPreviewLocal(tpl) {
   // Background: a real image (drawn to cover) wins; else the solid colour. The
   // image is fetched as a data: URL via the main process so the canvas isn't
   // tainted (a file:// image would make toDataURL throw).
+  await _drawPreviewBackground(ctx, tpl, FW, FH);
+
+  const b = tpl.button;
+  const pos = _resolvePreviewPositions(tpl);
+  const samples = [
+    [b.normalFill,   'Play Movie'],
+    [b.selectedFill, 'Scene Selection'],
+    [b.normalFill,   'Special Features'],
+  ];
+  samples.forEach(([fill, label], i) => {
+    drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
+  });
+  return cv.toDataURL('image/png');
+}
+
+// Paint the template's background (image-cover or solid colour) onto a 1920×1080
+// context. Shared by the main-menu and chapter-menu previews.
+async function _drawPreviewBackground(ctx, tpl, FW, FH) {
   const bg = tpl.background || {};
   const imgPath = (bg.type === 'image' && bg.imagePath)
     ? (typeof bg.imagePath === 'string' ? bg.imagePath : (bg.imagePath.path || '')) : '';
@@ -756,17 +788,38 @@ async function renderMenuPreviewLocal(tpl) {
     ctx.fillStyle = bg.color && /^#/.test(bg.color) ? bg.color : ('#' + (bg.color || '000000'));
     ctx.fillRect(0, 0, FW, FH);
   }
+}
+
+// ── v1.19.0 chapter-menu preview ────────────────────────────────────────────────
+// Mirrors how buildChapterMenuDisplaySet lays out the disc menu: up to 6 chapter
+// buttons (vertical stack) labelled from the real chapter names, plus a "Main Menu"
+// back button below. The first chapter is drawn in the selected fill to reflect the
+// disc's defaultSelectedButtonIdRef highlight. With no chapters yet it shows three
+// placeholders so the layout still reads.
+async function renderChapterMenuPreviewLocal(tpl, chapters) {
+  const FW = 1920, FH = 1080;
+  const cv = document.createElement('canvas');
+  cv.width = FW; cv.height = FH;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  await ensureMenuFont();
+  await _drawPreviewBackground(ctx, tpl, FW, FH);
 
   const b = tpl.button;
-  const pos = _resolvePreviewPositions(tpl);
-  const samples = [
-    [b.normalFill,   'Play Movie'],
-    [b.selectedFill, 'Scene Selection'],
-    [b.normalFill,   'Special Features'],
-  ];
-  samples.forEach(([fill, label], i) => {
+  const list = Array.isArray(chapters) ? chapters.slice(0, 6) : [];
+  const labels = list.length
+    ? list.map((c, i) => (c && c.name && c.name.trim()) ? c.name.trim() : `Chapter ${i + 1}`)
+    : ['Chapter 1', 'Chapter 2', 'Chapter 3'];
+
+  const pos = _autoPositions(labels.length, b.width, b.height, b.gap);
+  const lowestY = pos.reduce((m, p) => Math.max(m, p.y), 0);
+  const backPos = { x: Math.round((FW - b.width) / 2), y: lowestY + b.height + b.gap * 2 };
+
+  labels.forEach((label, i) => {
+    const fill = (i === 0) ? b.selectedFill : b.normalFill;  // first button highlighted
     drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
   });
+  drawTemplateButton(ctx, tpl, b.normalFill, 'Main Menu', backPos.x, backPos.y);
   return cv.toDataURL('image/png');
 }
 
@@ -1281,10 +1334,26 @@ function _entryRoles(tpl, id) {
 // flat-screen-TV bezel (the hero element of the Menus tab). The isolated
 // Normal/Selected button PNGs sit in a collapsible detail below. On a validation
 // error, the pane shows the error banner instead.
+// v1.19.0 — the chapter sub-menu is "active" (designable + buildable) only when
+// the project has chapters and the chapter menu is enabled.
+function _chapterMenuActive() {
+  const p = state.project;
+  return !!(p.chapterMenu && p.chapterMenu.enabled && Array.isArray(p.chapters) && p.chapters.length > 0);
+}
+
 let _lastSelForFade = null;   // drives the opacity fade only on template switch
 function previewHTML() {
   const ed = state.templateEditor;
   if (ed.error) return `<div class="tpl-error">⚠ ${esc(ed.error)}</div>`;
+  // The Main/Chapter switcher only appears when a chapter menu exists; otherwise
+  // force the designer back to the main menu so a stale selection can't linger.
+  const chapActive = _chapterMenuActive();
+  if (!chapActive && ed.activeMenu !== 'main') ed.activeMenu = 'main';
+  const switcher = chapActive ? `
+    <div class="menu-switcher">
+      <button class="menu-switch-btn ${ed.activeMenu === 'main' ? 'active' : ''}" data-menu="main">Main Menu</button>
+      <button class="menu-switch-btn ${ed.activeMenu === 'chapters' ? 'active' : ''}" data-menu="chapters">Chapter Select</button>
+    </div>` : '';
   const menu = ed.previews.menu;
   // Fade in only when the browsed template actually changed — not on every
   // keystroke in the editor (which would make the preview flicker constantly).
@@ -1300,6 +1369,7 @@ function previewHTML() {
             : `<div class="tpl-preview-img" style="width:300px;height:40px"></div>`}
     </div>`;
   return `
+    ${switcher}
     <div class="tv-assembly">
       <div class="tv-bezel">
         <div class="tv-screen${fade}">
@@ -2064,6 +2134,35 @@ function pageProject(p) {
       </div>
     </div>
 
+    ${(p.chapters && p.chapters.length > 0) ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <div class="card-icon">🎞️</div>
+        <div><div class="card-title">Chapter Menu</div><div class="card-subtitle">A Scene Selection screen generated from your ${p.chapters.length} chapter mark${p.chapters.length === 1 ? '' : 's'}</div></div>
+      </div>
+      <div class="card-body">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
+          <input type="checkbox" id="chapter-menu-enabled" ${p.chapterMenu?.enabled ? 'checked' : ''} style="width:14px;height:14px">
+          Enable Scene Selection menu
+        </label>
+        ${p.chapterMenu?.enabled ? `
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:10px;align-items:center">
+            <label style="font-size:12px;color:var(--text-secondary);min-width:96px">Main-menu label</label>
+            <input type="text" id="chapter-menu-label" value="${esc(p.chapterMenu?.label || 'Scene Selection')}" placeholder="Scene Selection" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <label style="font-size:12px;color:var(--text-secondary);min-width:96px">Template</label>
+            <select id="chapter-menu-template" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
+              <option value="" ${!p.chapterMenu?.templateId ? 'selected' : ''}>Same as main menu</option>
+              ${templateOptionsHTML(p.chapterMenu?.templateId || '')}
+            </select>
+          </div>
+          <div style="font-size:11px;color:var(--text-tertiary)">Design this screen in the Menus tab — switch to “Chapter Select” above the preview. (Disc output wiring lands in a later update.)</div>
+        </div>` : ''}
+      </div>
+    </div>` : ''}
+
     <div class="card">
       <div class="card-header">
         <div class="card-icon">🎬</div>
@@ -2617,6 +2716,8 @@ async function loadProject() {
       extras: proj.extras || [],
       useSplash: proj.useSplash || false,
       menuConfig: { ...state.project.menuConfig, ...(proj.menuConfig || {}) },
+      // v1.19.0 — keep a complete chapterMenu (defaults fill in older project files)
+      chapterMenu: { ...state.project.chapterMenu, ...(proj.chapterMenu || {}) },
     });
   } catch(e) {
     alert('Failed to load project: ' + e.message);
@@ -2656,6 +2757,13 @@ function attachListeners() {
   document.getElementById('force-transcode')?.addEventListener('change', e => setPrj({ forceTranscode: e.target.checked }));
   document.getElementById('proj-vcodec')?.addEventListener('change',e => setPrj({ videoFormat: e.target.value }));
   document.getElementById('menus-enabled')?.addEventListener('change', e => setState({ menusEnabled: e.target.checked }));
+  // v1.19.0 chapter (Scene Selection) menu controls
+  document.getElementById('chapter-menu-enabled')?.addEventListener('change', e =>
+    setPrj({ chapterMenu: { ...state.project.chapterMenu, enabled: e.target.checked } }));
+  document.getElementById('chapter-menu-label')?.addEventListener('input', e =>
+    setPrjText({ chapterMenu: { ...state.project.chapterMenu, label: e.target.value } }));
+  document.getElementById('chapter-menu-template')?.addEventListener('change', e =>
+    setPrj({ chapterMenu: { ...state.project.chapterMenu, templateId: e.target.value || null } }));
   document.getElementById('use-splash')?.addEventListener('change',  e => setPrj({ useSplash: e.target.checked }));
   document.getElementById('use-ig-menu')?.addEventListener('change', e => setPrj({ useIGMenu: e.target.checked }));
   document.getElementById('ig-menu-title')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, title: e.target.value } }));
@@ -3105,6 +3213,17 @@ function attachListeners() {
     setState({ burning: false, burnDone: false, burnError: null, burnStatus: null, burnMessage: '' });
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
+
+  // ── v1.19.0 menu switcher (Main Menu / Chapter Select) above the TV bezel ──
+  document.querySelectorAll('.menu-switch-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = btn.getAttribute('data-menu');
+      if (m && state.templateEditor.activeMenu !== m) {
+        state.templateEditor.activeMenu = m;
+        scheduleMenuPreview();   // flips the caption to "Rendering…" and re-renders the bezel
+      }
+    });
+  });
 
   // ── v1.18.0 layout overlay — (re)size + (re)wire drag handlers + paint guides.
   // Always last: the overlay needs the final DOM in place. Drag state survives a
