@@ -245,6 +245,10 @@ ipcMain.on('window-maximize',() => mainWindow && (mainWindow.isMaximized() ? mai
 
 ipcMain.handle('get-home-dir', async () => os.homedir());
 
+// Single source of truth for the version shown in the title bar — reads
+// package.json via Electron, so it can never drift out of sync again.
+ipcMain.handle('app-version', async () => app.getVersion());
+
 // Grant local font access permission
 app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

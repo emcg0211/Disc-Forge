@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('discForge', {
     hexToRgb: (hex)       => color.hexToRgb(hex),
   },
   // Core
+  getAppVersion:    ()        => ipcRenderer.invoke('app-version'),
   getHomeDir:       ()        => ipcRenderer.invoke('get-home-dir'),
   checkTools:       ()        => ipcRenderer.invoke('check-tools'),
   openFileDialog:   (opts)    => ipcRenderer.invoke('open-file-dialog', opts),
