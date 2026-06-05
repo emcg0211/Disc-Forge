@@ -1,7 +1,7 @@
 {
-  "id": "criterion-horizontal",
-  "name": "Criterion Horizontal",
-  "description": "Criterion / art-house: cream backdrop, near-black bar, gold selection. Light theme studio bar.",
+  "id": "gold-bar",
+  "name": "Gold Bar",
+  "description": "Art-house light theme: cream backdrop, near-black bar, gold selection.",
   "schemaVersion": 1,
   "category": "studio",
   "palette": [

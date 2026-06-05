@@ -1,7 +1,7 @@
 {
-  "id": "wb-studio",
-  "name": "WB Studio",
-  "description": "Warner-style studio bar: cyan strip across the bottom with pill buttons that light up cyan when selected. Mad Max / Dark Knight / Dune vibe.",
+  "id": "ocean-bar",
+  "name": "Ocean Bar",
+  "description": "Cyan strip across the bottom with pill buttons that light up cyan when selected, over a near-black frame.",
   "schemaVersion": 1,
   "category": "studio",
   "palette": [

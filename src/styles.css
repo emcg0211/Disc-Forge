@@ -1249,6 +1249,27 @@ body.light-mode .tab-count { background: rgba(160,120,32,0.1) !important; color:
   max-height: calc(100vh - 190px); overflow-y: auto;
 }
 
+/* ── Design-first selector (v1.22.0) ─────────────────────────────────────── */
+.tpl-selector { padding: 14px 12px; display: flex; flex-direction: column; gap: 16px; }
+.tpl-selector-section { display: flex; flex-direction: column; gap: 8px; }
+.tpl-selector-label {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-tertiary); font-family: var(--font-mono);
+}
+.tpl-design-toggle { display: flex; gap: 8px; }
+.tpl-design-btn {
+  flex: 1; padding: 14px 8px; font-size: 12px; font-weight: 600;
+  background: var(--bg-overlay); border: 1px solid var(--border-mid);
+  border-radius: var(--radius-md); color: var(--text-secondary);
+  cursor: pointer; font-family: var(--font-ui); transition: all var(--t-fast);
+}
+.tpl-design-btn:hover { border-color: var(--gold-dim); color: var(--text-primary); }
+.tpl-design-btn.on {
+  background: var(--gold-glow); color: var(--gold-bright);
+  border-color: var(--gold-dim); font-weight: 700;
+}
+.tpl-scheme-select { width: 100%; }
+
 /* ── Thumbnail browser ───────────────────────────────────────────────────── */
 .tpl-grid-group {
   font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;

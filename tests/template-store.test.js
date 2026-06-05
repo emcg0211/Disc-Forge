@@ -33,7 +33,7 @@ console.log('\n=== 1: listBuiltIn ===');
   const bi = store.listBuiltIn();
   const ids = bi.map(t => t.id).sort();
   assert(ids.length === 24, 'listBuiltIn: 24 built-in templates');
-  for (const id of ['classic', 'minimal', 'theatrical', 'wb-studio', 'universal-dark', 'sony-platinum', 'criterion-horizontal']) {
+  for (const id of ['classic', 'minimal', 'theatrical', 'ocean-bar', 'navy-bar', 'silver-bar', 'gold-bar']) {
     assert(ids.includes(id), `listBuiltIn: includes ${id}`);
   }
   assert(bi.every(t => typeof t.category === 'string' && t.category.trim().length > 0),
@@ -275,7 +275,7 @@ console.log('\n=== 13: horizontal layout schema ===');
   rejects(() => validateTemplate(withBtn({ count: 0 })), 'count < 1');
 
   // the 4 shipped horizontal templates all declare layout horizontal + a bar color
-  for (const id of ['wb-studio', 'universal-dark', 'sony-platinum', 'criterion-horizontal']) {
+  for (const id of ['ocean-bar', 'navy-bar', 'silver-bar', 'gold-bar']) {
     const t = loadTemplate(id);
     assertEq(t.button.layout, 'horizontal', `${id}: layout horizontal`);
     assert(/^[0-9a-f]{6}$/i.test(t.button.barColor), `${id}: has a 6-hex bar color`);

@@ -1,7 +1,7 @@
 {
-  "id": "sony-platinum",
-  "name": "Sony Platinum",
-  "description": "Sony Pictures clean monochrome: charcoal bar, silver selection, crisp white labels. Spider-Man / Once Upon a Time vibe.",
+  "id": "silver-bar",
+  "name": "Silver Bar",
+  "description": "Clean monochrome: charcoal bar, silver selection, crisp white labels.",
   "schemaVersion": 1,
   "category": "studio",
   "palette": [

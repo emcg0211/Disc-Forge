@@ -120,6 +120,7 @@ let state = {
   templates: { builtIn: [], user: [], loaded: false },
   templateEditor: {
     selectedId: 'classic',
+    designType: 'vertical', // v1.22.0 — 'vertical' | 'horizontal'; drives the design-first selector (auto-detected on selectTemplate)
     activeMenu: 'main', // v1.19.0 — 'main' | 'chapters' (which menu the designer previews/edits)
     draft: null,        // working copy (object) of the selected template
     baseline: null,     // pristine copy for Revert / dirty detection
@@ -567,6 +568,9 @@ async function selectTemplate(id) {
   ed.selectedId = id;
   ed.draft = r.template;
   ed.baseline = JSON.parse(JSON.stringify(r.template));
+  // Auto-detect the design type from the selected template's layout so the
+  // design toggle reflects the active template (e.g. on first load).
+  ed.designType = (r.template.button && r.template.button.layout === 'horizontal') ? 'horizontal' : 'vertical';
   ed.error = null;
   ed.previews = {};
   ed.previewKey = null;
@@ -1710,6 +1714,9 @@ function paintThumb(id) {
 
 // Paint everything already cached, then lazily render anything missing.
 function ensureThumbnails() {
+  // The v1.22.0 design-first selector has no thumbnail grid; skip the work
+  // entirely unless thumbnail canvases are actually present in the DOM.
+  if (!document.querySelector('[data-thumb-id]')) return;
   const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
   for (const m of all) paintThumb(m.id);
   if (all.some(m => !state.templateEditor.thumbs[m.id]) && !_thumbRunning) renderMissingThumbnails();
@@ -1746,49 +1753,59 @@ function invalidateThumb(id) {
   delete _thumbImgCache[id];
 }
 
-function thumbCardHTML(m) {
+// ── v1.22.0 design-first template selector ───────────────────────────────────────
+// Step 1 — pick a Design (Vertical Stack / Horizontal Bar); Step 2 — pick a Color
+// Scheme from a dropdown that lists only templates matching the active design type.
+function designSelectorHTML() {
+  const t  = state.templates;
   const ed = state.templateEditor;
-  const sel = m.id === ed.selectedId ? ' selected' : '';
-  const active = m.id === (state.project.igMenuConfig && state.project.igMenuConfig.templateId);
-  const badge = m.readonly
-    ? '<span class="tpl-card-badge tcb-builtin">Built-in</span>'
-    : '<span class="tpl-card-badge tcb-custom">Custom</span>';
+  if (!t.loaded) return `<div class="tpl-list-empty">Loading…</div>`;
+  const design = ed.designType || 'vertical';
+
+  const designBtn = (val, label) =>
+    `<button class="tpl-design-btn ${design === val ? 'on' : ''}" data-design-type="${esc(val)}">${esc(label)}</button>`;
+
+  const matches = m => ((m.layout || 'vertical') === design);
+  const byName  = (a, b) => a.name.localeCompare(b.name);
+  const builtIn = t.builtIn.filter(matches).slice().sort(byName);
+  const user    = t.user.filter(matches).slice().sort(byName);
+
+  const opt = m => `<option value="${esc(m.id)}" ${m.id === ed.selectedId ? 'selected' : ''}>${esc(m.name)}</option>`;
+  let options = builtIn.map(opt).join('');
+  if (user.length) options += `<optgroup label="Custom">${user.map(opt).join('')}</optgroup>`;
+  if (!options) options = `<option disabled selected>No templates</option>`;
+
   return `
-    <div class="tpl-card${sel}" data-tpl-id="${esc(m.id)}" title="${esc(m.name)}">
-      <div class="tpl-card-thumb">
-        <canvas data-thumb-id="${esc(m.id)}" width="${THUMB_W}" height="${THUMB_H}"></canvas>
-        ${active ? '<span class="tpl-active-pill">● ACTIVE</span>' : ''}
+    <div class="tpl-selector card">
+      <div class="tpl-selector-section">
+        <div class="tpl-selector-label">Design</div>
+        <div class="tpl-design-toggle">
+          ${designBtn('vertical', 'Vertical Stack')}
+          ${designBtn('horizontal', 'Horizontal Bar')}
+        </div>
       </div>
-      <div class="tpl-card-meta">
-        <span class="tpl-card-name">${esc(m.name)}</span>
-        ${badge}
+      <div class="tpl-selector-section">
+        <div class="tpl-selector-label">Color Scheme</div>
+        <select id="tpl-scheme-select" class="tpl-scheme-select">${options}</select>
       </div>
     </div>`;
 }
 
-function thumbnailGridHTML() {
-  const t = state.templates;
-  if (!t.loaded) return `<div class="tpl-list-empty">Loading…</div>`;
-  const CATEGORY_ORDER = ['Solid', 'Modern', 'Bold', 'Wide Format', 'Image Background'];
-  const byCat = {};
-  for (const m of t.builtIn) {
-    const cat = (m.category && m.category.trim()) ? m.category : 'Other';
-    (byCat[cat] = byCat[cat] || []).push(m);
+// Switch the active design type. If the currently-selected template doesn't match
+// the new type, jump to the first template of that type so the preview follows.
+function setDesignType(type) {
+  const ed = state.templateEditor;
+  if (type !== 'horizontal' && type !== 'vertical') return;
+  ed.designType = type;
+  const all = [...(state.templates.builtIn || []), ...(state.templates.user || [])];
+  const cur = all.find(m => m.id === ed.selectedId);
+  if (!cur || (cur.layout || 'vertical') !== type) {
+    const first = all
+      .filter(m => (m.layout || 'vertical') === type)
+      .sort((a, b) => a.name.localeCompare(b.name))[0];
+    if (first) { selectTemplate(first.id); return; }  // re-renders + auto-syncs designType
   }
-  const cats = [
-    ...CATEGORY_ORDER.filter(c => byCat[c]),
-    ...Object.keys(byCat).filter(c => !CATEGORY_ORDER.includes(c)).sort(),
-  ];
-  let html = '';
-  for (const cat of cats) {
-    const items = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
-    html += `<div class="tpl-grid-group">${esc(cat)}</div><div class="tpl-grid">${items.map(thumbCardHTML).join('')}</div>`;
-  }
-  html += `<div class="tpl-grid-group">Custom</div>`;
-  html += t.user.length
-    ? `<div class="tpl-grid">${t.user.map(thumbCardHTML).join('')}</div>`
-    : `<div class="tpl-list-empty">No custom templates yet</div>`;
-  return html;
+  render();
 }
 
 // ── Quick presets (Section E) ───────────────────────────────────────────────────
@@ -2096,7 +2113,7 @@ function pageTemplates() {
       <div class="page-subtitle">Design the look of your interactive disc menu — pick a template, then customize it.</div>
     </div></div>
     <div class="menus-layout ${showEditor ? 'has-editor' : ''}">
-      <div class="menus-browser">${thumbnailGridHTML()}</div>
+      <div class="menus-browser">${designSelectorHTML()}</div>
       <div class="menus-center">${center}</div>
       <div class="menus-editor ${showEditor ? 'open' : ''}">
         <div class="menus-editor-inner card">${right}</div>
@@ -3080,10 +3097,13 @@ function attachListeners() {
   document.getElementById('ig-edit-templates')?.addEventListener('click', () =>
     setState({ tab: 'templates' }));
 
-  // ── Menus tab (v1.16.0) ─────────────────────────────────────────────────────
-  // Thumbnail browser cards
-  document.querySelectorAll('.tpl-card').forEach(el =>
-    el.addEventListener('click', () => selectTemplate(el.dataset.tplId)));
+  // ── Menus tab (v1.22.0 design-first selector) ───────────────────────────────
+  // Step 1 — Design type toggle (Vertical Stack / Horizontal Bar)
+  document.querySelectorAll('[data-design-type]').forEach(el =>
+    el.addEventListener('click', () => setDesignType(el.dataset.designType)));
+  // Step 2 — Color scheme dropdown → switch templates
+  document.getElementById('tpl-scheme-select')?.addEventListener('change', e =>
+    selectTemplate(e.target.value));
 
   // Built-in: Duplicate to edit + shared name-entry modal
   document.getElementById('tpl-duplicate')?.addEventListener('click', duplicateSelected);

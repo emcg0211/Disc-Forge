@@ -196,7 +196,7 @@ console.log('\n=== 5: generateMenuVideo error handling ===');
 console.log('\n=== 6: horizontal layout bar ===');
 {
   // A shipped horizontal template (solid bg + bar) encodes to a valid locked clip.
-  const wb = loadTemplate('wb-studio');
+  const wb = loadTemplate('ocean-bar');
   const out = path.join(WORK, 'horiz_wb.mkv');
   generateMenuVideo({ template: wb, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out, duration: 1 });
   assertLockedClip(out, 'horizontal solid + bar');

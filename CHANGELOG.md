@@ -2,16 +2,19 @@
 
 ## v1.22.0 — 2026-06-05
 
-**Horizontal button layout — studio disc style (WB/Universal/Sony)**
+**Horizontal button layout — studio disc style**
 
 - Horizontal button layout mode: studio-style bottom bar with evenly-spaced
-  icon placeholder + label buttons (WB/Universal/Sony disc style)
-- 4 new horizontal templates: WB Studio, Universal Dark, Sony Platinum,
-  Criterion Horizontal (24 built-ins total)
+  icon placeholder + label buttons
+- 4 new horizontal templates: Ocean Bar, Navy Bar, Silver Bar, Gold Bar
+  (24 built-ins total)
+- Template selector redesigned: choose Design (Vertical Stack / Horizontal
+  Bar) then Color Scheme from a dropdown
+- Renamed horizontal templates to remove brand references: Ocean Bar, Navy
+  Bar, Silver Bar, Gold Bar
 - Bar color, opacity, height, and icon size are all configurable in the
   template editor
-- Horizontal layout renders in the live preview, thumbnail grid, and on
-  the burned disc
+- Horizontal layout renders in the live preview and on the burned disc
 - Re-add deleted buttons in the layout editor: a "Deleted buttons" section
   shows a restore chip per hidden button, so individual buttons can be
   brought back without reverting the whole template

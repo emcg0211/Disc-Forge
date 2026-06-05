@@ -63,7 +63,8 @@ function listBuiltIn() {
       const p = path.join(BUILTIN_DIR, f);
       try {
         const t = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return { id: t.id, name: t.name, category: t.category || 'Other', path: p, readonly: true };
+        const layout = (t.button && t.button.layout === 'horizontal') ? 'horizontal' : 'vertical';
+        return { id: t.id, name: t.name, category: t.category || 'Other', layout, path: p, readonly: true };
       } catch { return null; }
     })
     .filter(Boolean)
@@ -80,7 +81,8 @@ function listUser() {
       const p = path.join(d, f);
       try {
         const t = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return { id: t.id || path.basename(f, '.json'), name: t.name || t.id, path: p, readonly: false };
+        const layout = (t.button && t.button.layout === 'horizontal') ? 'horizontal' : 'vertical';
+        return { id: t.id || path.basename(f, '.json'), name: t.name || t.id, layout, path: p, readonly: false };
       } catch { return null; }
     })
     .filter(Boolean)
