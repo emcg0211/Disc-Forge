@@ -4,6 +4,7 @@
   "description": "Professional Blu-ray Authoring Studio for macOS",
   "main": "src/main.js",
   "author": "Disc Forge",
+  "license": "LicenseRef-DiscForge-NonCommercial",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
