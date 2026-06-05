@@ -2660,6 +2660,7 @@ function aboutModalHTML() {
     '</div>' +
     '<div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:6px">Powered by FFmpeg · tsMuxeR · hdiutil</div>' +
     '<div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:14px">Copyright © 2026 ETHM</div>' +
+    '<div style="text-align:center;margin-bottom:14px"><a id="kofi-link" class="kofi-link" href="#">Support Disc Forge ☕</a></div>' +
     '<div class="modal-actions"><button class="btn btn-ghost" id="close-about">Close</button></div>' +
     '</div></div>';
 }
@@ -3184,6 +3185,11 @@ function attachListeners() {
   document.getElementById('close-modal')?.addEventListener('click', closeBuildModal);
   document.getElementById('about-btn')?.addEventListener('click', () => setState({ showAbout: true }));
   document.getElementById('close-about')?.addEventListener('click', () => setState({ showAbout: false }));
+  // Ko-fi support link — opens in the system browser (CSP blocks inline onclick).
+  document.getElementById('kofi-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.discForge.openExternal('https://ko-fi.com/discforge');
+  });
   document.getElementById('close-welcome')?.addEventListener('click', () => setState({ showWelcome: false }));
   document.getElementById('save-project-btn')?.addEventListener('click', saveProject);
   document.getElementById('load-project-btn')?.addEventListener('click', loadProject);

@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('discForge', {
   buildDisc:        (project) => ipcRenderer.invoke('build-disc', project),
   buildMultiTitleDisc: (args) => ipcRenderer.invoke('build-multi-title-disc', args),
   revealInFinder:   (filePath)=> ipcRenderer.invoke('reveal-in-finder', filePath),
+  openExternal:     (url)      => ipcRenderer.invoke('open-external', url),
 
   // Menu templates (v1.13.0). Renderer-side editor UI is Phase 4.
   templateList:      ()                 => ipcRenderer.invoke('template-list'),

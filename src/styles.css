@@ -1541,3 +1541,11 @@ body.light-mode .tpl-swatch-text { color: #fff; }
   background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.3);
   border-radius: var(--radius-sm);
 }
+
+/* ── Ko-fi support link (About modal) ───────────────────────────────────────── */
+.kofi-link {
+  font-size: 12px; color: var(--text-secondary);
+  text-decoration: none; cursor: pointer;
+  transition: color var(--t-fast);
+}
+.kofi-link:hover { color: var(--gold-bright); text-decoration: underline; }

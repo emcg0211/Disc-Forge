@@ -586,6 +586,10 @@ ipcMain.handle('open-folder-dialog', async () => {
 
 ipcMain.handle('reveal-in-finder', async (_, filePath) => shell.showItemInFolder(filePath));
 
+// Open an external URL in the system browser (Ko-fi support link, update download).
+// shell is already imported at the top of this file.
+ipcMain.handle('open-external', (e, url) => shell.openExternal(url));
+
 // ── IPC: probe ────────────────────────────────────────────────────────────────
 
 ipcMain.handle('probe-file', async (_, filePath) => {
