@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.22.0 — TBD
+## v1.22.0 — 2026-06-05
 
 **Horizontal button layout — studio disc style (WB/Universal/Sony)**
 
