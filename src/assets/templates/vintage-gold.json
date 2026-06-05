@@ -1,0 +1,75 @@
+{
+  "id": "vintage-gold",
+  "name": "Vintage Gold",
+  "description": "Classic-Hollywood archive: aged-parchment labels on dark sepia, an antique-gold selection, and a gold hairline. Softly rounded, retro.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 34,
+      "Cr": 131,
+      "Cb": 122,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 199,
+      "Cr": 140,
+      "Cb": 102,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 45,
+      "Cr": 133,
+      "Cb": 121,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 132,
+      "Cr": 159,
+      "Cb": 67,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 870,
+    "height": 82,
+    "gap": 28,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rounded",
+    "cornerRadius": 10,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        42,
+        32,
+        20
+      ],
+      "hex": "2a2014"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        185,
+        134,
+        12
+      ],
+      "hex": "b9860c"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#e8d5a0"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1a1409",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

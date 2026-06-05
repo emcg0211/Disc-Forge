@@ -1,0 +1,74 @@
+{
+  "id": "neon-noir",
+  "name": "Neon Noir",
+  "description": "Nightlife and music video: bright white labels on pure black, a hot-pink selection, borderless neon pills. Concert-poster energy.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 16,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 33,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 128,
+      "Cr": 194,
+      "Cb": 139,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 800,
+    "height": 70,
+    "gap": 22,
+    "border": 0,
+    "borderEntry": 1,
+    "shape": "pill",
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        20,
+        20,
+        20
+      ],
+      "hex": "141414"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        236,
+        72,
+        153
+      ],
+      "hex": "ec4899"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#ffffff"
+  },
+  "background": {
+    "type": "solid",
+    "color": "000000",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

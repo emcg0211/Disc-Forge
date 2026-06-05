@@ -1,0 +1,74 @@
+{
+  "id": "blood-sport",
+  "name": "Blood Sport",
+  "description": "Action and sports punch: stark white labels on pure black, a vivid red selection, borderless heavyweight pills. UFC-grade impact.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 25,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 38,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 95,
+      "Cr": 208,
+      "Cb": 101,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 880,
+    "height": 84,
+    "gap": 20,
+    "border": 0,
+    "borderEntry": 1,
+    "shape": "pill",
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        26,
+        26,
+        26
+      ],
+      "hex": "1a1a1a"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        220,
+        37,
+        37
+      ],
+      "hex": "dc2525"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#ffffff"
+  },
+  "background": {
+    "type": "solid",
+    "color": "0a0a0a",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "id": "slate-modern",
+  "name": "Slate Modern",
+  "description": "Clean corporate/tech: light-gray labels on near-black slate, a crisp dark hairline, and an electric-blue selection. Wide, flat, modern.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 38,
+      "Cr": 127,
+      "Cb": 131,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 199,
+      "Cr": 126,
+      "Cb": 131,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 52,
+      "Cr": 125,
+      "Cb": 133,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 121,
+      "Cr": 89,
+      "Cb": 189,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 950,
+    "height": 76,
+    "gap": 22,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rect",
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        37,
+        42,
+        52
+      ],
+      "hex": "252a34"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        60,
+        130,
+        245
+      ],
+      "hex": "3c82f5"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#d1d5db"
+  },
+  "background": {
+    "type": "solid",
+    "color": "171920",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

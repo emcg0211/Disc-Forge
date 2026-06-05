@@ -1,0 +1,75 @@
+{
+  "id": "forest-dark",
+  "name": "Forest Dark",
+  "description": "Nature-documentary green: sage labels on deep forest, a warm green selection, and a muted green border. Rounded and organic.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 37,
+      "Cr": 122,
+      "Cb": 123,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 173,
+      "Cr": 118,
+      "Cb": 116,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 48,
+      "Cr": 121,
+      "Cb": 122,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 106,
+      "Cr": 109,
+      "Cb": 120,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 820,
+    "height": 74,
+    "gap": 24,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rounded",
+    "cornerRadius": 12,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        26,
+        45,
+        25
+      ],
+      "hex": "1a2d19"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        74,
+        123,
+        89
+      ],
+      "hex": "4a7b59"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#a7c4a0"
+  },
+  "background": {
+    "type": "solid",
+    "color": "0f1f0f",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

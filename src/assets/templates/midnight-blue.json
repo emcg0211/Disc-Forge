@@ -1,0 +1,74 @@
+{
+  "id": "midnight-blue",
+  "name": "Midnight Blue",
+  "description": "Broadcast-documentary calm: ice-blue labels on deep navy, brightening to a vivid cyan when selected. Borderless pill buttons.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 37,
+      "Cr": 121,
+      "Cb": 137,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 191,
+      "Cr": 106,
+      "Cb": 143,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 48,
+      "Cr": 118,
+      "Cb": 139,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 128,
+      "Cr": 46,
+      "Cb": 170,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 800,
+    "height": 72,
+    "gap": 24,
+    "border": 0,
+    "borderEntry": 1,
+    "shape": "pill",
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        21,
+        41,
+        59
+      ],
+      "hex": "15293b"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        0,
+        181,
+        215
+      ],
+      "hex": "00b5d7"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#a8d8ea"
+  },
+  "background": {
+    "type": "solid",
+    "color": "0d1b2a",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

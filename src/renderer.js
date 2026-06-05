@@ -139,6 +139,7 @@ let state = {
     livePositions:    null,   // {x,y}[] | null — working copy during drag/between renders
     selectedBtn:      -1,     // index of selected button (-1 = none)
     hoveredBtn:       -1,     // index of hovered button (-1 = none)
+    deletedBtns:      [],     // indices hidden via Delete/✕ in the layout editor (preview-only; see _deleteSelectedButton)
     dragging:         false,
     dragOffsetX:      0,
     dragOffsetY:      0,
@@ -575,6 +576,7 @@ async function selectTemplate(id) {
   ed.selectedBtn = -1;
   ed.hoveredBtn = -1;
   ed.dragging = false;
+  ed.deletedBtns = [];   // freshly-selected template shows all sample buttons
   render();
   refreshPreviews();
 }
@@ -634,7 +636,7 @@ async function renderMenuPreview() {
     // v1.19.0: the menu switcher chooses which menu the TV bezel previews.
     dataUrl = (ed.activeMenu === 'chapters')
       ? await renderChapterMenuPreviewLocal(tpl, state.project.chapters)
-      : await renderMenuPreviewLocal(tpl);
+      : await renderMenuPreviewLocal(tpl, ed.deletedBtns);
   } catch (_) {
     dataUrl = null;  // never leave the pane stuck — fall back to the button states
   }
@@ -780,7 +782,7 @@ function _resolvePreviewPositions(tpl) {
   );
 }
 
-async function renderMenuPreviewLocal(tpl) {
+async function renderMenuPreviewLocal(tpl, hiddenIdx = []) {
   const FW = 1920, FH = 1080;
   const cv = document.createElement('canvas');
   cv.width = FW; cv.height = FH;
@@ -801,6 +803,7 @@ async function renderMenuPreviewLocal(tpl) {
     [b.normalFill,   'Special Features'],
   ];
   samples.forEach(([fill, label], i) => {
+    if (hiddenIdx.includes(i)) return;   // button deleted in the layout editor
     drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
   });
   return cv.toDataURL('image/png');
@@ -872,6 +875,10 @@ async function renderChapterMenuPreviewLocal(tpl, chapters) {
 // redraws only the overlay; render() (and the disc-accurate menu re-render) fires
 // once on mouseup via updateDraft().
 let _overlayHandlers = null;
+
+// Radius (CSS px) of the ✕ delete badge drawn at the selected button's top-right
+// corner. Shared by renderOverlay (draw) and _deleteIconHitTest (click).
+const DELETE_ICON_R = 7;   // 14px diameter, per spec
 
 // Lazily populate the working position list from the draft (stored positions win,
 // missing entries fall back to auto-layout). Returns the live array.
@@ -977,6 +984,7 @@ function renderOverlay(overlay) {
   // 5. Button outlines + index + handles
   const overlaps = _overlapSet(positions, bw, bh);
   positions.forEach((p, i) => {
+    if (ed.deletedBtns.includes(i)) return;   // hidden via Delete/✕ — draw nothing for it
     const rx = p.x * scaleX, ry = p.y * scaleY, rw = bw * scaleX, rh = bh * scaleY;
     const isSelected = i === ed.selectedBtn;
     const isHovered  = i === ed.hoveredBtn;
@@ -1002,6 +1010,21 @@ function renderOverlay(overlay) {
         ctx.fillStyle = '#dbb85a';
         ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
       });
+
+      // Delete (✕) icon — small red circle at the top-right corner of the
+      // selected button. Clicking it deletes the button (same as the Delete key);
+      // _deleteIconHitTest() recomputes this exact geometry for hit detection.
+      ctx.beginPath();
+      ctx.arc(rx + rw, ry, DELETE_ICON_R, 0, Math.PI * 2);
+      ctx.fillStyle = '#dc2626';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.5;
+      const xr = DELETE_ICON_R * 0.45;
+      ctx.beginPath();
+      ctx.moveTo(rx + rw - xr, ry - xr); ctx.lineTo(rx + rw + xr, ry + xr);
+      ctx.moveTo(rx + rw + xr, ry - xr); ctx.lineTo(rx + rw - xr, ry + xr);
+      ctx.stroke();
     }
   });
 
@@ -1046,8 +1069,12 @@ function _onOverlayMouseDown(e) {
   const positions = _ensureLivePositions();
   if (!positions) return;
 
+  // Click on the selected button's ✕ badge → delete it (before drag/select logic).
+  if (_deleteIconHitTest(e, overlay)) { _deleteSelectedButton(); return; }
+
   let hit = -1;
   for (let i = positions.length - 1; i >= 0; i--) {
+    if (ed.deletedBtns.includes(i)) continue;   // can't grab a hidden button
     const p = positions[i];
     if (discX >= p.x && discX <= p.x + bw && discY >= p.y && discY <= p.y + bh) { hit = i; break; }
   }
@@ -1092,6 +1119,7 @@ function _onOverlayMouseMove(e) {
   if (positions) {
     let hovered = -1;
     for (let i = positions.length - 1; i >= 0; i--) {
+      if (ed.deletedBtns.includes(i)) continue;   // hidden buttons aren't hoverable
       const p = positions[i];
       if (discX >= p.x && discX <= p.x + bw && discY >= p.y && discY <= p.y + bh) { hovered = i; break; }
     }
@@ -1116,6 +1144,71 @@ function _onOverlayMouseLeave(e) {
   if (ed.dragging) { _onOverlayMouseUp(e); return; }
   ed.hoveredBtn = -1;
   renderOverlay(e.currentTarget);
+}
+
+// True when the mouse event lands on the selected button's ✕ delete badge.
+// Mirrors the badge geometry drawn in renderOverlay (top-right corner, radius
+// DELETE_ICON_R in CSS px). Returns false when no button is selected.
+function _deleteIconHitTest(e, overlay) {
+  const ed = state.templateEditor;
+  const i = ed.selectedBtn;
+  if (i < 0 || !ed.draft || !overlay) return false;
+  const positions = ed.livePositions || _resolvePreviewPositions(ed.draft);
+  const p = positions[i];
+  if (!p) return false;
+  const rect = overlay.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return false;
+  const scaleX = rect.width / 1920, scaleY = rect.height / 1080;
+  const ix = (p.x + ed.draft.button.width) * scaleX;   // badge centre (top-right corner)
+  const iy = p.y * scaleY;
+  const dx = (e.clientX - rect.left) - ix;
+  const dy = (e.clientY - rect.top)  - iy;
+  return (dx * dx + dy * dy) <= (DELETE_ICON_R + 3) * (DELETE_ICON_R + 3);   // +3px slop
+}
+
+// Document-level keydown for the layout editor: Delete/Backspace removes the
+// selected button. Attached once at startup (see the Start block) — NOT per
+// render — so it never stacks duplicate listeners. Ignored while typing in a
+// field so Backspace keeps deleting text there.
+function _onLayoutKeydown(e) {
+  if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+  if (state.tab !== 'templates') return;
+  const ed = state.templateEditor;
+  if (!ed.draft || isReadonly(ed.selectedId) || ed.selectedBtn < 0) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  e.preventDefault();
+  _deleteSelectedButton();
+}
+
+// Delete the currently-selected sample button from the layout editor.
+//
+// The template model has no per-button "exists" flag — the disc's button set is
+// driven by the project's menu items, and a template only stores per-button
+// *positions*. So "deleting" a button here means two things, both reversible:
+//   1. it is hidden from the editor preview (state.templateEditor.deletedBtns),
+//   2. any custom coordinate stored for it is removed (set to null) so the entry
+//      reverts to its auto-layout default.
+// This is exactly the "resets to the auto-layout default" behaviour the spec
+// allows. "Revert to saved" restores every button (see revertTemplate /
+// isDirty, which treat a non-empty deletedBtns as a pending change).
+function _deleteSelectedButton() {
+  const ed = state.templateEditor;
+  if (isReadonly(ed.selectedId) || !ed.draft) return;
+  const i = ed.selectedBtn;
+  if (i < 0) return;
+  if (!ed.deletedBtns.includes(i)) ed.deletedBtns.push(i);
+  ed.selectedBtn = -1;
+  ed.hoveredBtn = -1;
+  // Remove this button's stored position entry (null = auto-layout). updateDraft
+  // re-renders the controls and re-renders both previews (which now skip the
+  // hidden index). When the draft carries no custom positions there is nothing
+  // to null — the deletedBtns hide alone drives the preview update.
+  updateDraft(t => {
+    if (Array.isArray(t.button.positions) && t.button.positions[i] != null) {
+      t.button.positions[i] = null;
+    }
+  });
 }
 
 // Commit the working positions into the draft (triggers render + preview). Each
@@ -1268,6 +1361,9 @@ function syncTemplateFills(tpl) {
 
 function isDirty() {
   const ed = state.templateEditor;
+  // A pending button deletion (deletedBtns) counts as dirty so Save/Revert enable
+  // and "Revert to saved" can restore the hidden buttons.
+  if (ed.deletedBtns && ed.deletedBtns.length) return true;
   return !!(ed.draft && ed.baseline && JSON.stringify(ed.draft) !== JSON.stringify(ed.baseline));
 }
 
@@ -1333,6 +1429,9 @@ function revertTemplate() {
   if (!ed.baseline) return;
   ed.draft = JSON.parse(JSON.stringify(ed.baseline));
   ed.error = null;
+  ed.deletedBtns = [];     // restore any buttons deleted in the layout editor
+  ed.livePositions = null; // re-derive from the restored draft on next interaction
+  ed.selectedBtn = -1;
   render();
   refreshPreviews();
 }
@@ -3279,5 +3378,6 @@ function attachListeners() {
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', _onLayoutKeydown);   // layout-editor button deletion (once)
 render();
 boot();

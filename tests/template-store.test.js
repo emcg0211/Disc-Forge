@@ -32,7 +32,7 @@ console.log('\n=== 1: listBuiltIn ===');
 {
   const bi = store.listBuiltIn();
   const ids = bi.map(t => t.id).sort();
-  assert(ids.length === 12, 'listBuiltIn: 12 built-in templates');
+  assert(ids.length === 20, 'listBuiltIn: 20 built-in templates');
   for (const id of ['classic', 'minimal', 'theatrical']) {
     assert(ids.includes(id), `listBuiltIn: includes ${id}`);
   }

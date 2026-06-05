@@ -1,0 +1,74 @@
+{
+  "id": "cinema-noir",
+  "name": "Cinema Noir",
+  "description": "Film-festival restraint: cream-white labels on deep charcoal, a thin gold-toned hairline border, and a deep-burgundy selection. Wide Criterion-style bars.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 38,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 223,
+      "Cr": 131,
+      "Cb": 124,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 56,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 69,
+      "Cr": 176,
+      "Cb": 120,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 900,
+    "height": 80,
+    "gap": 28,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rect",
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        47,
+        47,
+        47
+      ],
+      "hex": "2f2f2f"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        138,
+        26,
+        46
+      ],
+      "hex": "8a1a2e"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#f5f0e8"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1a1a1a",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

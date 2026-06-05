@@ -1,0 +1,75 @@
+{
+  "id": "warm-amber",
+  "name": "Warm Amber",
+  "description": "Family-archive warmth: ivory labels on dark roasted brown, a rich amber selection, and soft rounded corners. Made for home movies and weddings.",
+  "schemaVersion": 1,
+  "category": "professional",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 35,
+      "Cr": 132,
+      "Cb": 125,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 216,
+      "Cr": 134,
+      "Cb": 118,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 48,
+      "Cr": 133,
+      "Cb": 122,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 133,
+      "Cr": 167,
+      "Cb": 81,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 860,
+    "height": 78,
+    "gap": 26,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rounded",
+    "cornerRadius": 12,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        45,
+        36,
+        25
+      ],
+      "hex": "2d2419"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        198,
+        123,
+        41
+      ],
+      "hex": "c67b29"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#f2e8d5"
+  },
+  "background": {
+    "type": "solid",
+    "color": "1c1410",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}
