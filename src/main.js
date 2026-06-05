@@ -6,6 +6,11 @@ const os = require('os');
 
 let mainWindow;
 
+// Custom menu backgrounds (v1.21.0) live here; uploaded images are copied in and
+// referenced by filename only from templates. Mirrors menu-builder.backgroundsDir()
+// (which resolves the same path in the disc pipeline).
+function backgroundsDir() { return path.join(app.getPath('userData'), 'backgrounds'); }
+
 // ── Tool detection ────────────────────────────────────────────────────────────
 // When running as a packaged .app, the shell PATH is minimal.
 // We search all common Homebrew, MacPorts, and app bundle locations.
@@ -215,6 +220,9 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   createWindow();
+  // Custom menu backgrounds (v1.21.0): uploaded images are copied here and
+  // referenced by filename only from templates. Ensure the dir exists at startup.
+  try { fs.mkdirSync(backgroundsDir(), { recursive: true }); } catch (_) {}
   probeIsoMethod(); // non-blocking — result stored in bestIsoMethod
   // Sanity-check dumpHex with a known buffer
   const testBuf = Buffer.from([
@@ -3613,6 +3621,39 @@ function fixMultiTitleNavigationForEpisodes(bdFolder, numEpisodes, ep1TsMuxerPre
   sendLog(`[MT] fixNav: post-write validation passed`);
 }
 
+// ── Custom background image IPC (v1.21.0) ─────────────────────────────────────
+// Uploaded images are COPIED into app userData/backgrounds and referenced by
+// filename only from templates (keeps templates portable — no absolute paths,
+// no base64). The renderer constructs preview paths from bgGetDir + filename.
+function importBackgroundImage(srcPath) {
+  const bgDir = backgroundsDir();
+  fs.mkdirSync(bgDir, { recursive: true });
+  const file = path.basename(srcPath);   // filename only — strips any directory
+  fs.copyFileSync(srcPath, path.join(bgDir, file));   // overwrite if it already exists
+  return { file, bgDir };
+}
+
+ipcMain.handle('bg:getDir', () => backgroundsDir());
+
+ipcMain.handle('bg:pick', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose a background image',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return null;
+  try { return importBackgroundImage(r.filePaths[0]); }
+  catch (e) { sendLog(`[bg:pick] copy failed: ${e.message}`); return null; }
+});
+
+// Used by drag-and-drop in the template editor (the dropped file has an absolute
+// path already, so no dialog — just copy it into the backgrounds dir).
+ipcMain.handle('bg:import', async (_, srcPath) => {
+  if (!srcPath || typeof srcPath !== 'string' || !fs.existsSync(srcPath)) return null;
+  try { return importBackgroundImage(srcPath); }
+  catch (e) { sendLog(`[bg:import] copy failed: ${e.message}`); return null; }
+});
+
 // ── Menu template IPC (v1.13.0) ───────────────────────────────────────────────
 // Main-process plumbing only — the renderer-side template editor UI is Phase 4.
 // These handlers are thin wrappers over src/lib/template-store.js.
@@ -3686,7 +3727,7 @@ ipcMain.handle('template-preview-button', async (_, { id, template, state = 'sel
 ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
   try {
     const store = require('./lib/template-store');
-    const { renderButtonBitmap, styleFromTemplate } = require('./lib/menu-builder');
+    const { renderButtonBitmap, styleFromTemplate, resolveBackgroundImagePath, _drawBackgroundImage } = require('./lib/menu-builder');
     const { yuvToRgb } = require('./lib/color');
     const tpl = template || store.loadById(id);
 
@@ -3698,20 +3739,20 @@ ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
     const canvas = createCanvas(FW, FH);
     const ctx = canvas.getContext('2d');
 
-    // Background: a real image file (drawn to cover) wins; else the solid color.
+    // Background: a real image file (drawn per fit mode) wins; else the solid color.
+    // Resolve the portable `file` (→ userData/backgrounds) or legacy `imagePath`.
     const bg = tpl.background || {};
+    const hex = bg.color && /^#/.test(bg.color) ? bg.color : `#${bg.color || '000000'}`;
     let drewImage = false;
-    if (bg.type === 'image' && bg.imagePath && fs.existsSync(bg.imagePath)) {
+    const imgPath = bg.type === 'image' ? resolveBackgroundImagePath(bg) : null;
+    if (imgPath && fs.existsSync(imgPath)) {
       try {
-        const img = await loadImage(bg.imagePath);
-        const scale = Math.max(FW / img.width, FH / img.height);
-        const dw = img.width * scale, dh = img.height * scale;
-        ctx.drawImage(img, (FW - dw) / 2, (FH - dh) / 2, dw, dh);
+        const img = await loadImage(imgPath);
+        _drawBackgroundImage(ctx, img, bg.fit, FW, FH, hex);   // contain letterboxes against hex
         drewImage = true;
       } catch { /* fall through to solid fill */ }
     }
     if (!drewImage) {
-      const hex = bg.color && /^#/.test(bg.color) ? bg.color : `#${bg.color || '000000'}`;
       ctx.fillStyle = hex;
       ctx.fillRect(0, 0, FW, FH);
     }

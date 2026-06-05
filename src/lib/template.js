@@ -145,10 +145,25 @@ function validateTemplate(obj) {
   if (!bg || typeof bg !== 'object') E('background block missing');
   if (!VALID_BG_TYPES.includes(bg.type)) E(`background.type must be one of ${VALID_BG_TYPES.join('/')}`);
   if (!_isHex6(bg.color)) E('background.color must be a 6-digit hex color');
-  if (!VALID_FITS.includes(bg.fit)) E(`background.fit must be one of ${VALID_FITS.join('/')}`);
-  // imagePath may be null in a template *definition* (e.g. the built-in Theatrical
-  // ships without an image). generateMenuVideo() enforces a non-null path at
-  // encode time when background.type === 'image'.
+  // fit is optional; when present it must be a known mode. Absent → the render
+  // path defaults to 'cover'. (Relaxed from "required" in v1.21.0 so a template
+  // reverted from image back to solid — which drops fit — still validates.)
+  if (bg.fit !== undefined && bg.fit !== null && !VALID_FITS.includes(bg.fit)) {
+    E(`background.fit must be one of ${VALID_FITS.join('/')}`);
+  }
+  // file (v1.21.0): a *filename-only* reference into the app's userData/backgrounds
+  // directory (see main.js bg:pick — uploaded images are copied there). It keeps
+  // templates portable JSON: no absolute paths, no base64. When present it must be
+  // a bare filename with no path separators (defends against traversal too).
+  if (bg.file !== undefined && bg.file !== null) {
+    if (typeof bg.file !== 'string' || !bg.file.trim()) E('background.file must be a non-empty string');
+    if (/[\\/]/.test(bg.file) || bg.file.includes(path.sep) || bg.file.includes('..')) {
+      E('background.file must be a filename only (no path separators)');
+    }
+  }
+  // imagePath (legacy absolute path) may be null in a template *definition* (e.g.
+  // the built-in Theatrical ships without an image). generateMenuVideo() enforces
+  // a usable image at encode time when background.type === 'image'.
   if (bg.imagePath != null && typeof bg.imagePath !== 'string') {
     E('background.imagePath must be a string or null');
   }

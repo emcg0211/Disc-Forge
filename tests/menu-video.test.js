@@ -176,6 +176,20 @@ console.log('\n=== 5: generateMenuVideo error handling ===');
       outputPath: path.join(WORK, 'anim.mkv'), duration: 1 });
   } catch { threw = true; }
   assert(threw, 'image template with animated source throws (validated before encode)');
+
+  // v1.21.0: a type:image template whose `file` reference is MISSING on disk falls
+  // back to the solid color plate — it must NOT throw and must still emit a valid
+  // locked 1920×1080 clip (never crash a build over a deleted background asset).
+  {
+    const missing = { ...theatrical, background: { type: 'image', color: '112233', file: 'does-not-exist-xyz.png', fit: 'cover' } };
+    const out = path.join(WORK, 'missing_file_fallback.mkv');
+    let ok = true;
+    try {
+      generateMenuVideo({ template: missing, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out, duration: 1 });
+    } catch { ok = false; }
+    assert(ok, 'image template with a missing file does not throw (solid fallback)');
+    assertLockedClip(out, 'missing-file solid fallback');
+  }
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────

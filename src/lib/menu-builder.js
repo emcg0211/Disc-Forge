@@ -1363,6 +1363,81 @@ function _fitScaleExpr(fit, w, h) {
   }
 }
 
+// ── Background image resolution (v1.21.0) ─────────────────────────────────────────
+// User-uploaded background images are copied to app userData/backgrounds and stored
+// in the template as a bare filename (background.file) — never an absolute path — so
+// templates stay portable. Resolve that filename back to an absolute path here, in
+// the main process. The directory is resolved lazily from Electron so this module
+// still loads under plain node (tests fall back to ~/.disc-forge/backgrounds, the
+// same convention template-store.js uses for the templates dir).
+let _backgroundsDirCache = null;
+function backgroundsDir() {
+  if (_backgroundsDirCache) return _backgroundsDirCache;
+  try {
+    const { app } = require('electron');
+    if (app && typeof app.getPath === 'function') {
+      _backgroundsDirCache = path.join(app.getPath('userData'), 'backgrounds');
+    }
+  } catch { /* not running under Electron */ }
+  if (!_backgroundsDirCache) _backgroundsDirCache = path.join(require('os').homedir(), '.disc-forge', 'backgrounds');
+  return _backgroundsDirCache;
+}
+
+/**
+ * Resolve a background block to an absolute image path, or null if it references
+ * no image. Prefers the portable `file` (→ userData/backgrounds/<file>); falls back
+ * to the legacy absolute `imagePath`. Does NOT check existence — callers decide
+ * whether a missing file is an error (legacy null) or a graceful fallback (v1.21.0).
+ *
+ * @param {object} bg - template.background
+ * @returns {string|null}
+ */
+function resolveBackgroundImagePath(bg) {
+  if (!bg) return null;
+  if (typeof bg.file === 'string' && bg.file.trim()) return path.join(backgroundsDir(), bg.file);
+  if (typeof bg.imagePath === 'string' && bg.imagePath.trim()) return bg.imagePath;
+  return null;
+}
+
+/**
+ * Compute the destination rectangle for drawing an image into an FW×FH frame under
+ * a given fit mode. Pure math (no canvas) so the cover/contain/stretch logic is unit
+ * testable. This is the canvas-side counterpart of _fitScaleExpr (the ffmpeg path);
+ * both must agree on what each fit mode means.
+ *   cover   — scale to fill the frame, centred, cropping the overflow (default)
+ *   contain — scale to fit entirely inside, centred (letterbox the remainder)
+ *   stretch — scale to exactly FW×FH, distorting aspect ratio
+ *
+ * @returns {{dx:number, dy:number, dw:number, dh:number}}
+ */
+function computeBackgroundDrawRect(fit, imgW, imgH, FW, FH) {
+  if (!imgW || !imgH) return { dx: 0, dy: 0, dw: FW, dh: FH };
+  if (fit === 'stretch') return { dx: 0, dy: 0, dw: FW, dh: FH };
+  const scale = fit === 'contain'
+    ? Math.min(FW / imgW, FH / imgH)
+    : Math.max(FW / imgW, FH / imgH);   // 'cover' (default)
+  const dw = imgW * scale, dh = imgH * scale;
+  return { dx: (FW - dw) / 2, dy: (FH - dh) / 2, dw, dh };
+}
+
+/**
+ * Draw a loaded image onto a 2D canvas context per the fit mode, painting the
+ * fallback color first so 'contain' letterboxes against it. Used by the in-process
+ * menu previews (template-preview-menu); the burned disc uses ffmpeg (_fitScaleExpr).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {object} img - a loaded canvas Image (has .width/.height)
+ * @param {string} fit - 'cover' | 'contain' | 'stretch'
+ * @param {number} FW
+ * @param {number} FH
+ * @param {string} [fallbackColor] - CSS color string for the letterbox / base plate
+ */
+function _drawBackgroundImage(ctx, img, fit, FW, FH, fallbackColor) {
+  if (fallbackColor) { ctx.fillStyle = fallbackColor; ctx.fillRect(0, 0, FW, FH); }
+  const { dx, dy, dw, dh } = computeBackgroundDrawRect(fit, img.width, img.height, FW, FH);
+  ctx.drawImage(img, dx, dy, dw, dh);
+}
+
 /**
  * Generate the menu background clip (the video the IG is later injected into).
  *
@@ -1389,10 +1464,22 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
   const { width: W, height: H, fps } = MENU_VIDEO;
   const anull = 'anullsrc=channel_layout=stereo:sample_rate=48000';
 
-  let args;
+  // Resolve the image (portable `file` preferred, legacy `imagePath` fallback).
+  // A type:image template with NO reference at all is misconfigured → throw. A
+  // template that DOES reference an image whose file is missing on disk falls back
+  // to the solid color plate (never crash a build over a deleted asset — v1.21.0).
+  let imgPath = null;
   if (bg.type === 'image') {
-    if (!bg.imagePath) throw new Error('generateMenuVideo: background.type is "image" but background.imagePath is null');
-    validateBackgroundImage(bg.imagePath, ffprobePath);
+    const resolved = resolveBackgroundImagePath(bg);
+    if (!resolved) {
+      throw new Error('generateMenuVideo: background.type is "image" but no image is set (file/imagePath)');
+    }
+    if (fs.existsSync(resolved)) imgPath = resolved;   // present → encode it; missing → fall through to solid
+  }
+
+  let args;
+  if (imgPath) {
+    validateBackgroundImage(imgPath, ffprobePath);
     // Composite the scaled image over a solid color plate. This flattens any
     // alpha against background.color AND supplies the letterbox color for
     // 'contain'. format=yuv420p drops the (now-flattened) alpha for encoding.
@@ -1406,7 +1493,7 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
       `[bgc][fg]overlay=(W-w)/2:(H-h)/2,scale=${W}:${H}:out_range=tv,format=yuv420p[v]`;
     args = [
       '-y',
-      '-loop', '1', '-i', bg.imagePath,
+      '-loop', '1', '-i', imgPath,
       '-f', 'lavfi', '-i', anull,
       '-filter_complex', filter,
       '-map', '[v]', '-map', '1:a',
@@ -1525,6 +1612,10 @@ module.exports = {
   computeChapterGridPositions,
   generateMenuVideo,
   validateBackgroundImage,
+  resolveBackgroundImagePath,
+  backgroundsDir,
+  computeBackgroundDrawRect,
+  _drawBackgroundImage,
   renderButtonPreviewPng,
   MENU_VIDEO,
   MENU_ENCODE_ARGS,

@@ -167,6 +167,15 @@ function duplicate(id, newName) {
   const copy = JSON.parse(JSON.stringify(src));
   copy.name = (newName && String(newName).trim()) || `${src.name} copy`;
 
+  // A built-in image template (e.g. Cinema/Theatrical) carries no portable image
+  // file of its own — duplicating it must not leave a dangling image reference, so
+  // start the copy as a solid background (the fallback color is kept). User image
+  // templates DO carry a `file`, so this guard leaves those untouched.
+  if (copy.background && copy.background.type === 'image' && !copy.background.file) {
+    copy.background.type = 'solid';
+    delete copy.background.imagePath;
+  }
+
   // Choose a unique, non-built-in id.
   const taken = new Set([...listBuiltIn(), ...listUser()].map(t => t.id));
   let base = slugify(copy.name);

@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('discForge', {
   // Core
   getAppVersion:    ()        => ipcRenderer.invoke('app-version'),
   getImageDataUrl:  (fp)      => ipcRenderer.invoke('image-data-url', fp),
+  bgPick:           ()        => ipcRenderer.invoke('bg:pick'),
+  bgImport:         (p)       => ipcRenderer.invoke('bg:import', p),
+  bgGetDir:         ()        => ipcRenderer.invoke('bg:getDir'),
   getHomeDir:       ()        => ipcRenderer.invoke('get-home-dir'),
   getSystemFonts:   ()        => ipcRenderer.invoke('get-system-fonts'),
   checkTools:       ()        => ipcRenderer.invoke('check-tools'),

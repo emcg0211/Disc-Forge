@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.21.0 — TBD
+
+**Custom background image for disc menus**
+
+- Upload any JPG/PNG as the menu background in the template editor
+- Three fit modes: Cover (fill frame), Contain (letterbox), Stretch
+- Background image is stored in app data and referenced by filename —
+  templates remain portable JSON
+- Image renders in live preview, thumbnail grid, and on the burned disc
+- Fallback to solid color if image file is missing
+- Background color picker remains as fallback/overlay base
+- 826 tests
+
 ## v1.20.0 — 2026-06-04
 
 **Professional template library + layout-editor button deletion**

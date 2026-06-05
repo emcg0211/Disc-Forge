@@ -757,6 +757,30 @@ function _loadImage(src) {
   });
 }
 
+// Custom background image (v1.21.0): the app userData/backgrounds dir, fetched
+// once at startup. Templates store only a filename (background.file); the renderer
+// joins it onto _bgDir to build a path the main process can read for previews.
+let _bgDir = null;
+(async () => { try { _bgDir = await window.discForge.bgGetDir(); } catch (_) {} })();
+
+// Resolve a background block to a path the main process can read (getImageDataUrl):
+// the portable `file` (→ _bgDir/file) wins; else the legacy absolute imagePath.
+function _bgRef(bg) {
+  if (!bg) return '';
+  if (typeof bg.file === 'string' && bg.file.trim()) return _bgDir ? (_bgDir + '/' + bg.file) : '';
+  return _bgImagePath(bg.imagePath);
+}
+
+// Canvas-side fit math — a byte-for-byte mirror of computeBackgroundDrawRect() in
+// src/lib/menu-builder.js so the preview matches the disc encoder's fit handling.
+function _bgDrawRect(fit, iw, ih, FW, FH) {
+  if (!iw || !ih) return { dx: 0, dy: 0, dw: FW, dh: FH };
+  if (fit === 'stretch') return { dx: 0, dy: 0, dw: FW, dh: FH };
+  const scale = fit === 'contain' ? Math.min(FW / iw, FH / ih) : Math.max(FW / iw, FH / ih);
+  const dw = iw * scale, dh = ih * scale;
+  return { dx: (FW - dw) / 2, dy: (FH - dh) / 2, dw, dh };
+}
+
 // Auto-layout positions for the preview — a byte-identical mirror of
 // computeAutoPositions() in src/lib/menu-builder.js. The two MUST NOT drift, so
 // the preview shows exactly where the disc encoder will place each button.
@@ -813,25 +837,20 @@ async function renderMenuPreviewLocal(tpl, hiddenIdx = []) {
 // context. Shared by the main-menu and chapter-menu previews.
 async function _drawPreviewBackground(ctx, tpl, FW, FH) {
   const bg = tpl.background || {};
-  const imgPath = (bg.type === 'image' && bg.imagePath)
-    ? (typeof bg.imagePath === 'string' ? bg.imagePath : (bg.imagePath.path || '')) : '';
-  let drewImage = false;
-  if (imgPath) {
-    try {
-      const dataUrl = await window.discForge.getImageDataUrl(imgPath);
-      if (dataUrl) {
-        const img = await _loadImage(dataUrl);
-        const scale = Math.max(FW / img.width, FH / img.height);
-        const dw = img.width * scale, dh = img.height * scale;
-        ctx.drawImage(img, (FW - dw) / 2, (FH - dh) / 2, dw, dh);
-        drewImage = true;
-      }
-    } catch (_) { /* fall through to solid */ }
-  }
-  if (!drewImage) {
+  const fillSolid = () => {
     ctx.fillStyle = bg.color && /^#/.test(bg.color) ? bg.color : ('#' + (bg.color || '000000'));
     ctx.fillRect(0, 0, FW, FH);
-  }
+  };
+  const ref = (bg.type === 'image') ? _bgRef(bg) : '';
+  if (!ref) { fillSolid(); return; }   // solid, or image with no usable reference yet
+  try {
+    const dataUrl = await window.discForge.getImageDataUrl(ref);
+    if (!dataUrl) { fillSolid(); return; }   // file missing on disk → graceful fallback
+    const img = await _loadImage(dataUrl);
+    if (bg.fit === 'contain') fillSolid();   // 'contain' letterboxes against the fallback color
+    const r = _bgDrawRect(bg.fit, img.width, img.height, FW, FH);
+    ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
+  } catch (_) { fillSolid(); }
 }
 
 // ── v1.19.0 chapter-menu preview ────────────────────────────────────────────────
@@ -1793,16 +1812,17 @@ function templateEditorHTML(tpl) {
         <div class="tpl-dz-text">Drop an image or click to browse</div>
         <div class="tpl-dz-hint">PNG · JPG · WEBP</div>
       </div>
-      ${bg.imagePath ? `
+      ${(bg.file || bg.imagePath) ? `
       <div class="tpl-img-loaded">
         <div class="tpl-img-thumb" id="tpl-bg-thumb"></div>
-        <span class="tpl-img-name">${esc(_bgImageName(bg.imagePath))}</span>
+        <span class="tpl-img-name">${esc(_bgImageName(bg.file || bg.imagePath))}</span>
         <button class="tpl-img-clear" id="tpl-bg-image-clear2" title="Remove image">✕</button>
       </div>` : ''}
       <div class="tpl-ctl-row" style="margin-top:10px">
         <span class="tpl-ctl-label">Fit</span>
-        <select id="tpl-bg-fit2" style="width:auto">${['cover', 'contain', 'stretch'].map(f => `<option value="${f}" ${bg.fit === f ? 'selected' : ''}>${f}</option>`).join('')}</select>
-      </div>`}`;
+        <select id="tpl-bg-fit2" style="width:auto">${['cover', 'contain', 'stretch'].map(f => `<option value="${f}" ${(bg.fit || 'cover') === f ? 'selected' : ''}>${f}</option>`).join('')}</select>
+      </div>
+      <div class="tpl-dz-hint" style="margin-top:6px">Image is shown as-is on disc menus.</div>`}`;
 
   // SECTION B — Buttons
   const shape = (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect';
@@ -2969,32 +2989,41 @@ function attachListeners() {
     updateDraft(t => { t.background.color = e.target.value.replace(/^#/, ''); }));
   document.getElementById('tpl-bg-fit2')?.addEventListener('change', e =>
     updateDraft(t => { t.background.fit = e.target.value; }));
-  // The absolute path (string) is stored — validateTemplate + the disc builder
-  // both require a string, not the picker's {path,name} object.
-  const _setBgImage = (p) => { if (p) updateDraft(t => { t.background.imagePath = p; }); };
+  // Uploaded images are COPIED into app userData/backgrounds (main process) and the
+  // template stores the filename only — keeps templates portable (no absolute paths,
+  // no base64). bgPick opens a dialog; bgImport copies a dropped file's path.
+  const _applyBgFile = (r) => {
+    if (!r || !r.file) return;
+    if (r.bgDir) _bgDir = r.bgDir;
+    updateDraft(t => {
+      t.background.type = 'image';
+      t.background.file = r.file;
+      delete t.background.imagePath;          // drop any stale absolute path
+      if (!t.background.fit) t.background.fit = 'cover';
+    });
+  };
   const _dz = document.getElementById('tpl-bg-drop');
   if (_dz) {
-    _dz.addEventListener('click', async () => {
-      const r = await pickFile([{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]);
-      if (r) _setBgImage(r.path);
-    });
+    _dz.addEventListener('click', async () => { _applyBgFile(await window.discForge.bgPick()); });
     _dz.addEventListener('dragover', e => { e.preventDefault(); _dz.classList.add('drag'); });
     _dz.addEventListener('dragleave', () => _dz.classList.remove('drag'));
-    _dz.addEventListener('drop', e => {
+    _dz.addEventListener('drop', async e => {
       e.preventDefault(); _dz.classList.remove('drag');
       const f = e.dataTransfer.files && e.dataTransfer.files[0];
-      if (f && f.path) _setBgImage(f.path);
+      if (f && f.path) _applyBgFile(await window.discForge.bgImport(f.path));
     });
   }
+  // Remove Image → revert to a solid background (the fallback color stays).
   document.getElementById('tpl-bg-image-clear2')?.addEventListener('click', () =>
-    updateDraft(t => { t.background.imagePath = null; }));
+    updateDraft(t => { t.background.type = 'solid'; delete t.background.file; delete t.background.imagePath; delete t.background.fit; }));
   // Paint the loaded background-image thumbnail (via the main-process data URL).
   (async () => {
     const bg = state.templateEditor.draft && state.templateEditor.draft.background;
     const thumb = document.getElementById('tpl-bg-thumb');
-    if (thumb && bg && bg.type === 'image' && bg.imagePath) {
+    const ref = (bg && bg.type === 'image') ? _bgRef(bg) : '';
+    if (thumb && ref) {
       try {
-        const url = await window.discForge.getImageDataUrl(_bgImagePath(bg.imagePath));
+        const url = await window.discForge.getImageDataUrl(ref);
         if (url) thumb.style.backgroundImage = `url('${url}')`;
       } catch (_) {}
     }

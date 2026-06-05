@@ -12,8 +12,8 @@ const fs   = require('fs');
 const os   = require('os');
 
 const store = require(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'));
-const { renderButtonPreviewPng } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
-const { loadTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
+const { renderButtonPreviewPng, computeBackgroundDrawRect } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+const { loadTemplate, validateTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -188,6 +188,63 @@ console.log('\n=== 9: persistence round-trip ===');
   assertEq(reloaded.palette[2].Y, 99, 'round-trip: palette edit persisted across reload');
   assertEq(reloaded.button.normalFill.hex, '010203', 'round-trip: fill edit persisted across reload');
   assert(store2.listUser().some(t => t.id === dupId), 'round-trip: appears in listUser after reload');
+}
+
+// ── 10: background.file validation (v1.21.0 custom background image) ───────────────
+console.log('\n=== 10: background image schema ===');
+{
+  // Base off a solid built-in, then swap in an image background per case.
+  const withBg = (bg) => { const t = loadTemplate('classic'); t.background = bg; return t; };
+
+  // valid image: type + filename-only file + fit + color
+  assert(!!validateTemplate(withBg({ type: 'image', file: 'poster.jpg', fit: 'cover', color: '112233' })),
+    'accepts image: file + fit + color');
+  // fit defaults are optional now — image with no fit still validates
+  assert(!!validateTemplate(withBg({ type: 'image', file: 'poster.jpg', color: '112233' })),
+    'accepts image: file + color (fit omitted)');
+
+  rejects(() => validateTemplate(withBg({ type: 'image', file: '', fit: 'cover', color: '112233' })),
+    'image with empty (missing) file');
+  rejects(() => validateTemplate(withBg({ type: 'image', file: 'art/poster.jpg', fit: 'cover', color: '112233' })),
+    'image file with a forward slash');
+  rejects(() => validateTemplate(withBg({ type: 'image', file: '..\\poster.jpg', fit: 'cover', color: '112233' })),
+    'image file with a path-traversal segment');
+  rejects(() => validateTemplate(withBg({ type: 'image', file: 'poster.jpg', fit: 'zoom', color: '112233' })),
+    'unknown fit value');
+  rejects(() => validateTemplate(withBg({ type: 'image', file: 'poster.jpg', fit: 'cover', color: 'xyz' })),
+    'image missing a valid fallback color');
+
+  // solid is unchanged — still valid with and without fit
+  assert(!!validateTemplate(withBg({ type: 'solid', color: '1a1a2e' })), 'accepts solid (no fit)');
+  assert(!!validateTemplate(withBg({ type: 'solid', color: '1a1a2e', fit: 'cover' })), 'accepts solid (with fit)');
+  rejects(() => validateTemplate(withBg({ type: 'gradient', color: '1a1a2e' })), 'unknown background type');
+}
+
+// ── 11: fit math (cover / contain / stretch) ──────────────────────────────────────
+console.log('\n=== 11: computeBackgroundDrawRect ===');
+{
+  const FW = 1920, FH = 1080;
+  // stretch: exactly the frame regardless of source aspect
+  const st = computeBackgroundDrawRect('stretch', 100, 50, FW, FH);
+  assert(st.dx === 0 && st.dy === 0 && st.dw === FW && st.dh === FH, 'stretch fills the frame exactly');
+  // cover a square: scales to the larger ratio (19.2) → 1920×1920, vertically centred
+  const cov = computeBackgroundDrawRect('cover', 100, 100, FW, FH);
+  assert(cov.dw === 1920 && cov.dh === 1920 && cov.dy === -420, 'cover fills + crops (centred)');
+  // contain a square: scales to the smaller ratio (10.8) → 1080×1080, horizontally centred
+  const con = computeBackgroundDrawRect('contain', 100, 100, FW, FH);
+  assert(con.dw === 1080 && con.dh === 1080 && con.dx === 420, 'contain letterboxes (centred)');
+  // default (unknown / undefined) behaves like cover
+  const def = computeBackgroundDrawRect(undefined, 100, 100, FW, FH);
+  assert(def.dw === 1920 && def.dh === 1920, 'undefined fit defaults to cover');
+}
+
+// ── 12: duplicating a built-in image template starts solid ────────────────────────
+console.log('\n=== 12: duplicate(built-in image) → solid ===');
+{
+  // Cinema/Theatrical ship as type:image with no portable file; the copy must not
+  // carry a dangling image reference.
+  const dupId = store.duplicate('theatrical', 'My Theatrical');
+  assertEq(store.loadById(dupId).background.type, 'solid', 'duplicate of built-in image → solid background');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
