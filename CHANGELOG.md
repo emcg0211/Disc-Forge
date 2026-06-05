@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.21.0 — TBD
+## v1.21.0 — 2026-06-05
 
 **Custom background image for disc menus**
 
