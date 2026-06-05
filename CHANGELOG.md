@@ -1,5 +1,72 @@
 # Changelog
 
+## v1.19.0 — 2026-06-04
+
+**Chapter selection sub-menu — encoder/UI building blocks**
+
+- `JUMP_OBJECT` and `PLAY_PL_MARK` HDMV navigation commands added to `src/lib/ig-encoder.js`
+- Chapter button auto-layout: vertical stack for ≤6 chapters, 2-column grid for 7+
+- Main Menu / Chapter Select switcher above the TV bezel; Project-tab chapter-menu controls (enable, label, template)
+- 77 new unit tests (746 total)
+- Disc pipeline integration (second IG clip / mpls / clpi, multiple MovieObjects) deferred pending hardware testing
+
+## v1.18.0 — 2026-06-04
+
+**Interactive layout editor**
+
+- Drag-and-drop button positioning on a 1920×1080 canvas overlay
+- Grid / safe-area / center guides, corner handles, overlap warnings, live X/Y HUD, and 8 alignment tools
+- Spatial navigation (nearest-neighbor, `AXIS_PENALTY=3.0`) computes the remote's UP/DOWN/LEFT/RIGHT for hardware BD players
+- Encoder output byte-identical to the v1.17.0 golden hash; 669 tests
+
+## v1.17.0 — 2026-06-04
+
+**System fonts + button shapes**
+
+- System font enumeration (183 macOS fonts via the `font-list` package)
+- Button shapes — Rectangle / Rounded / Pill — with a corner-radius slider
+- Shape flows through both the preview and the disc build; 669 tests
+
+## v1.16.0 — 2026-06-04
+
+**Professional Menus tab redesign**
+
+- Reworked Menus tab: thumbnail-grid browser, TV-bezel preview, full design editor
+- Binary-bundling polish and menu-preview rendering improvements
+
+## v1.15.0 — 2026-06-03
+
+**Full-screen menu preview + template redesigns**
+
+- UI streamlined from 8 tabs to 3 (Project, Chapters, Menus)
+- Full-screen 16:9 disc-menu preview inside a TV bezel
+- Retail-quality redesign of the built-in menu templates
+
+## v1.14.0 — 2026-06-03
+
+**Canvas-based button text rendering**
+
+- Button text now drawn in-process with node-canvas — removes the ffmpeg/libfreetype `drawtext` dependency
+- 12 built-in templates with category grouping
+- Fully self-contained DMG: ffmpeg, tsMuxeR, mkvmerge, and xorriso bundled
+- 560 tests
+
+## v1.13.0 — 2026-06-01
+
+**Customizable menu templates (preview — templates-pro branch)**
+
+- Template schema with Classic / Minimal / Theatrical built-ins and a template store
+- Background-image support via ffmpeg still-frame encoding
+- Note: this branch was not merged to main at the time, pending the ffmpeg/canvas resolution that landed in v1.14.0
+
+## v1.12.0 — 2026-06-01
+
+**Hardware-verified IG menu on LG BP350 (S11 recipe)**
+
+- First hardware-verified interactive menu: the S11 recipe — 2 ODS per button (visible normal + selected state)
+- Working `PLAY_PL` and `JUMP_TITLE` navigation commands
+- Golden hash established; 436 tests
+
 ## v1.10.19 — 2026-05-31
 
 **Isolated button state model change — testing whether invisible-normal-state alone is what hardware needs**
