@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.22.0 — TBD
+
+**Horizontal button layout — studio disc style (WB/Universal/Sony)**
+
+- Horizontal button layout mode: studio-style bottom bar with evenly-spaced
+  icon placeholder + label buttons (WB/Universal/Sony disc style)
+- 4 new horizontal templates: WB Studio, Universal Dark, Sony Platinum,
+  Criterion Horizontal (24 built-ins total)
+- Bar color, opacity, height, and icon size are all configurable in the
+  template editor
+- Horizontal layout renders in the live preview, thumbnail grid, and on
+  the burned disc
+- 911 tests
+
 ## v1.21.0 — 2026-06-05
 
 **Custom background image for disc menus**

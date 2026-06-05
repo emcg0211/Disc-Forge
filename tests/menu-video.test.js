@@ -192,6 +192,35 @@ console.log('\n=== 5: generateMenuVideo error handling ===');
   }
 }
 
+// ── 6: horizontal layout (studio bar baked into the background clip) ───────────────
+console.log('\n=== 6: horizontal layout bar ===');
+{
+  // A shipped horizontal template (solid bg + bar) encodes to a valid locked clip.
+  const wb = loadTemplate('wb-studio');
+  const out = path.join(WORK, 'horiz_wb.mkv');
+  generateMenuVideo({ template: wb, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out, duration: 1 });
+  assertLockedClip(out, 'horizontal solid + bar');
+
+  // Horizontal layout but missing bar color → bar simply skipped, background only,
+  // still a valid clip (no crash).
+  const noBar = JSON.parse(JSON.stringify(wb));
+  delete noBar.button.barColor;
+  const out2 = path.join(WORK, 'horiz_nobar.mkv');
+  let ok = true;
+  try {
+    generateMenuVideo({ template: noBar, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out2, duration: 1 });
+  } catch { ok = false; }
+  assert(ok, 'horizontal with missing bar color does not crash (bar skipped)');
+  assertLockedClip(out2, 'horizontal no-bar fallback');
+
+  // Horizontal layout over an IMAGE background also bakes the bar in.
+  const wbImg = JSON.parse(JSON.stringify(wb));
+  wbImg.background = { type: 'image', color: wb.background.color, imagePath: png1080, fit: 'cover' };
+  const out3 = path.join(WORK, 'horiz_img.mkv');
+  generateMenuVideo({ template: wbImg, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out3, duration: 1 });
+  assertLockedClip(out3, 'horizontal image + bar');
+}
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

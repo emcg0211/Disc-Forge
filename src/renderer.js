@@ -705,6 +705,40 @@ function drawTemplateButton(ctx, tpl, fill, label, x, y) {
   const shape = (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect';
   const be = tpl.palette.find(e => e.id === b.borderEntry) || tpl.palette[1] || tpl.palette[0];
   const beCss = _yuvCss(be);
+
+  // Horizontal studio-bar button: fill tile + circular icon placeholder on top + a
+  // label below. Mirrors renderButtonBitmap's horizontal path in menu-builder.js.
+  if (b.layout === 'horizontal') {
+    ctx.fillStyle = _fillCss(tpl, fill);
+    if (shape === 'rect') ctx.fillRect(x, y, w, h);
+    else { _btnShapePath(ctx, x, y, w, h, shape, b.cornerRadius); ctx.fill(); }
+    if (border > 0) {  // thin frame in the border/text color
+      ctx.strokeStyle = beCss;
+      ctx.lineWidth = border;
+      if (shape === 'rect') ctx.strokeRect(x + border / 2, y + border / 2, w - border, h - border);
+      else { _btnShapePath(ctx, x + border / 2, y + border / 2, w - border, h - border, shape, b.cornerRadius); ctx.stroke(); }
+    }
+    // Icon ring (top ~60%): lighter fill + border-color stroke.
+    const iconD = b.iconSize || 52;
+    const cx = x + w / 2, cy = y + Math.round(h * 0.34);
+    ctx.beginPath();
+    ctx.arc(cx, cy, iconD / 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = beCss;
+    ctx.stroke();
+    // Label centered in the bottom band.
+    const labelSize = Math.max(10, Math.round(h * 0.30 * ((tpl.font && tpl.font.sizeRatio) || 0.5)));
+    const famH = (tpl.font && tpl.font.family) ? `"${tpl.font.family}", ` : '';
+    ctx.fillStyle = beCss;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${labelSize}px ${famH}MenuFont, "Helvetica Neue", Arial, sans-serif`;
+    if (label) ctx.fillText(label, x + w / 2, y + Math.round(h * 0.80));
+    return;
+  }
+
   ctx.fillStyle = _fillCss(tpl, fill);
   if (shape === 'rect') {
     ctx.fillRect(x, y, w, h);
@@ -785,6 +819,23 @@ function _bgDrawRect(fit, iw, ih, FW, FH) {
 // computeAutoPositions() in src/lib/menu-builder.js. The two MUST NOT drift, so
 // the preview shows exactly where the disc encoder will place each button.
 function _autoPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
+  // Object form (v1.22.0): _autoPositions(tpl, n) — horizontal studio-bar layout.
+  // MUST stay byte-identical to computeAutoPositions() in src/lib/menu-builder.js.
+  if (count && typeof count === 'object') {
+    const tpl = count;
+    const b = tpl.button || {};
+    const n = (bw != null) ? bw : (b.count != null ? b.count : (b.layout === 'horizontal' ? 4 : 3));
+    const FW = 1920, FH = 1080;
+    if (b.layout === 'horizontal') {
+      const barH = (b.barHeight != null) ? b.barHeight : 140;
+      const barY = FH - barH;
+      const totalW = n * b.width + (n - 1) * b.gap;
+      const startX = Math.round((FW - totalW) / 2);
+      const buttonY = Math.round(barY + (barH - b.height) / 2);
+      return Array.from({ length: n }, (_, i) => ({ x: startX + i * (b.width + b.gap), y: buttonY }));
+    }
+    return _autoPositions(n, b.width, b.height, b.gap, FW, FH);
+  }
   const totalH = count * bh + (count - 1) * gap;
   const startY = Math.round((fh - totalH) / 2);
   const startX = Math.round((fw - bw) / 2);
@@ -799,6 +850,11 @@ function _autoPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
 // and the interactive overlay so they always agree.
 function _resolvePreviewPositions(tpl) {
   const b = tpl.button;
+  // Horizontal layout: a centered row of `count` (default 4) buttons in the bar.
+  // Stored positions don't apply to the row layout — it's auto-placed.
+  if (b.layout === 'horizontal') {
+    return _autoPositions(tpl, b.count != null ? b.count : 4);
+  }
   const auto = _autoPositions(3, b.width, b.height, b.gap);
   const stored = Array.isArray(b.positions) ? b.positions : null;
   return auto.map((a, i) =>
@@ -820,17 +876,46 @@ async function renderMenuPreviewLocal(tpl, hiddenIdx = []) {
   await _drawPreviewBackground(ctx, tpl, FW, FH);
 
   const b = tpl.button;
+  // Horizontal layout: draw the studio bar behind the buttons, then a centered row.
+  _drawMenuBar(ctx, tpl, FW, FH);
+
   const pos = _resolvePreviewPositions(tpl);
-  const samples = [
-    [b.normalFill,   'Play Movie'],
-    [b.selectedFill, 'Scene Selection'],
-    [b.normalFill,   'Special Features'],
-  ];
+  const samples = (b.layout === 'horizontal')
+    ? _horizontalSamples(b)
+    : [
+        [b.normalFill,   'Play Movie'],
+        [b.selectedFill, 'Scene Selection'],
+        [b.normalFill,   'Special Features'],
+      ];
   samples.forEach(([fill, label], i) => {
     if (hiddenIdx.includes(i)) return;   // button deleted in the layout editor
+    if (!pos[i]) return;
     drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
   });
   return cv.toDataURL('image/png');
+}
+
+// Studio-bar fill (horizontal layout only). Drawn before the buttons so they sit on
+// top. Mirrors _barDrawboxFilter() in menu-builder.js (the burned-disc bar).
+function _drawMenuBar(ctx, tpl, FW, FH) {
+  const b = tpl.button;
+  if (!b || b.layout !== 'horizontal' || !b.barColor) return;
+  const barH = (b.barHeight != null) ? b.barHeight : 140;
+  const barY = FH - barH;
+  const op = (typeof b.barOpacity === 'number') ? b.barOpacity : 1;
+  ctx.save();
+  ctx.globalAlpha = op;
+  ctx.fillStyle = '#' + String(b.barColor).replace(/^#/, '');
+  ctx.fillRect(0, barY, FW, barH);
+  ctx.restore();
+}
+
+// Sample [fill, label] pairs for a horizontal preview: `count` (default 4) buttons,
+// the first one selected to mirror the disc's defaultSelectedButtonIdRef highlight.
+const _HORIZ_LABELS = ['Play', 'Scenes', 'Audio', 'Extras', 'Setup', 'Trailers', 'Chapters', 'Exit'];
+function _horizontalSamples(b) {
+  const n = b.count != null ? b.count : 4;
+  return Array.from({ length: n }, (_, i) => [i === 0 ? b.selectedFill : b.normalFill, _HORIZ_LABELS[i % _HORIZ_LABELS.length]]);
 }
 
 // Paint the template's background (image-cover or solid colour) onto a 1920×1080
@@ -1923,8 +2008,27 @@ function templateEditorHTML(tpl) {
     </div>
     <button class="btn btn-danger btn-sm" id="tpl-delete" style="margin-top:10px">Delete template</button>`;
 
+  // SECTION A0 — Button layout mode (vertical stack vs horizontal studio bar)
+  const isHoriz = b.layout === 'horizontal';
+  const barOpacity = (typeof b.barOpacity === 'number') ? b.barOpacity : 0.92;
+  const barHeight  = Number.isInteger(b.barHeight) ? b.barHeight : 140;
+  const iconSize   = Number.isInteger(b.iconSize) ? b.iconSize : 52;
+  const layoutModeSection = `
+    <div class="tpl-segmented">
+      <button class="tpl-seg ${!isHoriz ? 'on' : ''}" data-layout-mode="vertical">Vertical Stack</button>
+      <button class="tpl-seg ${isHoriz ? 'on' : ''}" data-layout-mode="horizontal">Horizontal Bar</button>
+    </div>
+    ${isHoriz ? `
+      <div class="tpl-sub-label">Bottom bar</div>
+      ${swatchRowHTML('tpl-bar-color', 'Bar color', '#' + (b.barColor || '111111'))}
+      ${sliderRowHTML('tpl-bar-opacity', 'Bar opacity', 0, 1, 0.01, barOpacity, Math.round(barOpacity * 100) + '%')}
+      ${sliderRowHTML('tpl-bar-height', 'Bar height', 80, 300, 10, barHeight, barHeight + 'px')}
+      ${sliderRowHTML('tpl-icon-size', 'Icon size', 30, 120, 4, iconSize, iconSize + 'px')}
+    ` : ''}`;
+
   return `
     ${presetsBarHTML()}
+    ${accordionHTML('layoutmode', 'Button Layout', layoutModeSection)}
     ${accordionHTML('bg', 'Background', bgSection)}
     ${accordionHTML('buttons', 'Buttons', btnSection)}
     ${accordionHTML('layout', 'Layout', layoutSection)}
@@ -3028,6 +3132,32 @@ function attachListeners() {
       } catch (_) {}
     }
   })();
+
+  // SECTION A0 — Button layout mode (vertical stack vs horizontal studio bar)
+  document.querySelectorAll('[data-layout-mode]').forEach(el =>
+    el.addEventListener('click', () => updateDraft(t => {
+      const v = el.dataset.layoutMode;
+      t.button.layout = v;
+      if (v === 'horizontal') {
+        // Seed sensible studio-bar defaults the first time the mode is chosen.
+        if (!t.button.barColor)   t.button.barColor = '111111';
+        if (typeof t.button.barOpacity !== 'number') t.button.barOpacity = 0.92;
+        if (!Number.isInteger(t.button.barHeight)) t.button.barHeight = 140;
+        if (!Number.isInteger(t.button.iconSize))  t.button.iconSize = 52;
+        if (t.button.count == null) t.button.count = 4;
+        // Reshape wide vertical buttons into compact horizontal tiles.
+        if (t.button.width > 400) t.button.width = 180;
+        if (t.button.height < 100) t.button.height = 120;
+      }
+    })));
+  document.getElementById('tpl-bar-color')?.addEventListener('input', e =>
+    updateDraft(t => { t.button.barColor = e.target.value.replace(/^#/, ''); }));
+  document.getElementById('tpl-bar-opacity')?.addEventListener('input', e =>
+    updateDraft(t => { t.button.barOpacity = parseFloat(e.target.value); }));
+  document.getElementById('tpl-bar-height')?.addEventListener('input', e =>
+    updateDraft(t => { t.button.barHeight = parseInt(e.target.value, 10); }));
+  document.getElementById('tpl-icon-size')?.addEventListener('input', e =>
+    updateDraft(t => { t.button.iconSize = parseInt(e.target.value, 10); }));
 
   // SECTION B — Button colors (palette entries) + size/border sliders
   const _setEntryColor = (entry, hex) => {

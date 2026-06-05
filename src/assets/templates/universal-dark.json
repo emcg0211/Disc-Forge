@@ -1,0 +1,80 @@
+{
+  "id": "universal-dark",
+  "name": "Universal Dark",
+  "description": "Universal theatrical: near-black frame with a deep-blue bar and electric-blue selection. Jurassic Park / Fast & Furious vibe.",
+  "schemaVersion": 1,
+  "category": "studio",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 25,
+      "Cr": 128,
+      "Cb": 130,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 211,
+      "Cr": 126,
+      "Cb": 142,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 34,
+      "Cr": 126,
+      "Cb": 139,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 85,
+      "Cr": 114,
+      "Cb": 214,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 175,
+    "height": 115,
+    "gap": 24,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rect",
+    "layout": "horizontal",
+    "barColor": "1a1a3e",
+    "barOpacity": 0.97,
+    "barHeight": 140,
+    "iconSize": 50,
+    "count": 4,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        18,
+        18,
+        42
+      ],
+      "hex": "12122a"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        58,
+        58,
+        255
+      ],
+      "hex": "3a3aff"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#e0e0ff"
+  },
+  "background": {
+    "type": "solid",
+    "color": "0a0a0f",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

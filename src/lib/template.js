@@ -41,6 +41,7 @@ const FONT_DIR    = path.join(__dirname, '..', 'assets', 'fonts');
 
 const VALID_FITS = ['cover', 'contain', 'stretch'];
 const VALID_BG_TYPES = ['solid', 'image'];
+const VALID_LAYOUTS = ['vertical', 'horizontal'];
 
 /**
  * Resolve a template's font.file to an absolute path. Relative names are
@@ -119,6 +120,34 @@ function validateTemplate(obj) {
       if (!_isInt(p.y, 0, 1079)) E(`button.positions[${i}].y must be an integer 0-1079`);
     });
   }
+  // ── button layout mode (optional; v1.22.0 horizontal studio-bar layout) ──
+  // 'vertical' (default/absent) keeps the v1.21 centered stack. 'horizontal' lays the
+  // buttons in a row inside a colored bar at the bottom of the frame (WB/Universal
+  // /Sony disc style). The bar/icon fields below only apply when layout==='horizontal';
+  // they are *ignored* (not rejected) in vertical mode so a template may carry them
+  // ahead of switching modes.
+  if (b.layout !== undefined && b.layout !== null && !VALID_LAYOUTS.includes(b.layout)) {
+    E("button.layout must be 'vertical' or 'horizontal'");
+  }
+  if (b.layout === 'horizontal') {
+    if (!_isHex6(b.barColor)) E('button.barColor is required (6-digit hex) when layout is horizontal');
+    if (b.barOpacity !== undefined && b.barOpacity !== null) {
+      if (typeof b.barOpacity !== 'number' || !(b.barOpacity >= 0 && b.barOpacity <= 1)) {
+        E('button.barOpacity must be a number between 0 and 1');
+      }
+    }
+    if (b.barHeight !== undefined && b.barHeight !== null && !_isInt(b.barHeight, 50, 400)) {
+      E('button.barHeight must be an integer 50-400');
+    }
+    if (b.iconSize !== undefined && b.iconSize !== null && !_isInt(b.iconSize, 20, 200)) {
+      E('button.iconSize must be an integer 20-200');
+    }
+  }
+  // count (optional; both modes) — number of sample buttons shown in the editor preview.
+  if (b.count !== undefined && b.count !== null && !_isInt(b.count, 1, 8)) {
+    E('button.count must be an integer 1-8');
+  }
+
   const paletteIds = obj.palette.map(e => e.id);
   if (!paletteIds.includes(b.borderEntry)) E('button.borderEntry must reference a palette id');
   for (const key of ['normalFill', 'selectedFill']) {
@@ -214,4 +243,5 @@ module.exports = {
   BUILTIN_DIR,
   VALID_FITS,
   VALID_BG_TYPES,
+  VALID_LAYOUTS,
 };

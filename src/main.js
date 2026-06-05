@@ -3757,21 +3757,47 @@ ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
       ctx.fillRect(0, 0, FW, FH);
     }
 
+    // Horizontal layout (v1.22.0): draw the studio bar behind the buttons.
+    const btn = tpl.button || {};
+    if (btn.layout === 'horizontal' && btn.barColor) {
+      const barH = (btn.barHeight != null) ? btn.barHeight : 140;
+      const barY = FH - barH;
+      const op = (typeof btn.barOpacity === 'number') ? btn.barOpacity : 1;
+      ctx.save();
+      ctx.globalAlpha = op;
+      ctx.fillStyle = '#' + String(btn.barColor).replace(/^#/, '');
+      ctx.fillRect(0, barY, FW, barH);
+      ctx.restore();
+    }
+
     // Palette index → RGB (YCbCr-601), same source of truth as the encoder.
     const pal = {};
     for (const e of tpl.palette) pal[e.id] = yuvToRgb(e.Y, e.Cr, e.Cb);
 
-    // 3 sample buttons, center-stacked — button 1 is the selected (focused) one.
     const style = styleFromTemplate(tpl);
     const w = style.w, h = style.h, gap = style.gap;
-    const samples = [
-      { label: 'Play Movie',       state: 'normal'   },
-      { label: 'Scene Selection',  state: 'selected' },
-      { label: 'Special Features', state: 'normal'   },
-    ];
-    const totalH = 3 * h + 2 * gap;
-    const startY = Math.round((FH - totalH) / 2);
-    const startX = Math.round((FW - w) / 2);
+
+    // Sample buttons: a horizontal row (count, default 4) for horizontal layout,
+    // else the classic 3-button center stack. Positions come from computeAutoPositions
+    // so the preview matches the disc encoder exactly.
+    const { computeAutoPositions } = require('./lib/menu-builder');
+    let samples, positions;
+    if (btn.layout === 'horizontal') {
+      const labels = ['Play', 'Scenes', 'Audio', 'Extras', 'Setup', 'Trailers', 'Chapters', 'Exit'];
+      const n = btn.count != null ? btn.count : 4;
+      samples = Array.from({ length: n }, (_, i) => ({ label: labels[i % labels.length], state: i === 0 ? 'selected' : 'normal' }));
+      positions = computeAutoPositions(tpl, n);
+    } else {
+      samples = [
+        { label: 'Play Movie',       state: 'normal'   },
+        { label: 'Scene Selection',  state: 'selected' },
+        { label: 'Special Features', state: 'normal'   },
+      ];
+      const totalH = 3 * h + 2 * gap;
+      const startY = Math.round((FH - totalH) / 2);
+      const startX = Math.round((FW - w) / 2);
+      positions = samples.map((_, i) => ({ x: startX, y: startY + i * (h + gap) }));
+    }
 
     samples.forEach((s, i) => {
       const idx = renderButtonBitmap(s.label, s.state, w, h, style);
@@ -3781,7 +3807,7 @@ ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
         const c = pal[idx[p]] || [0, 0, 0];
         d[p * 4] = c[0]; d[p * 4 + 1] = c[1]; d[p * 4 + 2] = c[2]; d[p * 4 + 3] = 255;
       }
-      ctx.putImageData(imgData, startX, startY + i * (h + gap));
+      ctx.putImageData(imgData, positions[i].x, positions[i].y);
     });
 
     const png = canvas.toBuffer('image/png');

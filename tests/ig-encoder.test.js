@@ -1381,10 +1381,10 @@ console.log('\n=== 17: template data model (template.js) ===');
   assertEq(classic.background.type, 'solid', 'Classic: background type = solid');
   assertEq(classic.background.color, '1a1a2e', 'Classic: background color = 1a1a2e (navy)');
 
-  // All built-in templates load + validate (20 ship after the professional set).
+  // All built-in templates load + validate (24 ship after the horizontal studio set).
   const store = require(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'));
   const builtInIds = store.listBuiltIn().map(m => m.id);
-  assertEq(builtInIds.length, 20, 'exactly 20 built-in templates ship');
+  assertEq(builtInIds.length, 24, 'exactly 24 built-in templates ship');
   for (const id of builtInIds) {
     const t = loadTemplate(id);
     assertEq(t.id, id, `loadTemplate('${id}'): id round-trips`);

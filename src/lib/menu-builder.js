@@ -101,6 +101,26 @@ function _drawButtonShape(ctx, x, y, w, h, shape, cornerRadius) {
  * @returns {{ x: number, y: number }[]}
  */
 function computeAutoPositions(count, bw, bh, gap, fw = 1920, fh = 1080) {
+  // Object form (v1.22.0): computeAutoPositions(tpl, n) — drives the horizontal
+  // studio-bar layout. The legacy positional form (count, bw, bh, gap, fw, fh) is
+  // unchanged and always produces the vertical stack. The renderer's _autoPositions()
+  // mirrors this math byte-for-byte (see src/renderer.js) — keep the two in sync.
+  if (count && typeof count === 'object') {
+    const tpl = count;
+    const b = tpl.button || {};
+    const n = (bw != null) ? bw : (b.count != null ? b.count : (b.layout === 'horizontal' ? 4 : 3));
+    const FW = 1920, FH = 1080;
+    if (b.layout === 'horizontal') {
+      const barH = (b.barHeight != null) ? b.barHeight : 140;
+      const barY = FH - barH;
+      const totalW = n * b.width + (n - 1) * b.gap;
+      const startX = Math.round((FW - totalW) / 2);
+      const buttonY = Math.round(barY + (barH - b.height) / 2);
+      return Array.from({ length: n }, (_, i) => ({ x: startX + i * (b.width + b.gap), y: buttonY }));
+    }
+    // vertical via the object form → delegate to the positional path (identical math)
+    return computeAutoPositions(n, b.width, b.height, b.gap, FW, FH);
+  }
   const totalH = count * bh + (count - 1) * gap;
   const startY = Math.round((fh - totalH) / 2);
   const startX = Math.round((fw - bw) / 2);
@@ -256,6 +276,10 @@ function styleFromTemplate(tpl = CLASSIC) {
     // Shape: 'rect' (default) | 'rounded' | 'pill'. Absent → 'rect' (v1.16.0 look).
     shape:        (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect',
     cornerRadius: b.cornerRadius,
+    // Layout: 'horizontal' draws an icon ring + label-below (studio bar style);
+    // anything else (default) keeps the v1.16 centered-label look.
+    layout:       b.layout === 'horizontal' ? 'horizontal' : 'vertical',
+    iconSize:     b.iconSize,
     fontPath:     resolveFontPath(tpl.font.file),
     fontSizeRatio: tpl.font.sizeRatio,
     fontColor:    tpl.font.color,
@@ -319,12 +343,35 @@ function renderButtonBitmap(text, state, w, h, style = DEFAULT_STYLE) {
     ctx.fillStyle = `rgb(${fillRGB[0]}, ${fillRGB[1]}, ${fillRGB[2]})`;
     _drawButtonShape(ctx, 0, 0, w, h, shape, style.cornerRadius);
 
-    // Draw the label centered both horizontally and vertically.
-    ctx.fillStyle    = style.fontColor;
-    ctx.font         = `${fontSize}px MenuFont`;
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, w / 2, h / 2);
+    if (style.layout === 'horizontal') {
+      // Studio-bar button: a circular icon placeholder in the top ~60% and the label
+      // below it. The ring strokes in the label color → quantizes to borderEntry; the
+      // translucent fill stays close to the button fill so it maps back to fillEntry.
+      const iconD = style.iconSize || 52;
+      const cx = w / 2;
+      const cy = Math.round(h * 0.34);
+      ctx.beginPath();
+      ctx.arc(cx, cy, iconD / 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = style.fontColor;
+      ctx.stroke();
+      // Label centered in the bottom band.
+      const labelSize = Math.max(10, Math.round(h * 0.30 * style.fontSizeRatio));
+      ctx.fillStyle    = style.fontColor;
+      ctx.font         = `${labelSize}px MenuFont`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, w / 2, Math.round(h * 0.80));
+    } else {
+      // Draw the label centered both horizontally and vertically.
+      ctx.fillStyle    = style.fontColor;
+      ctx.font         = `${fontSize}px MenuFont`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, w / 2, h / 2);
+    }
 
     // For rounded/pill, draw the border by stroking the same outline (inset so it
     // stays inside the shape) in the label color — it quantizes to borderEntry just
@@ -1439,6 +1486,24 @@ function _drawBackgroundImage(ctx, img, fit, FW, FH, fallbackColor) {
 }
 
 /**
+ * Build an ffmpeg drawbox filter for the horizontal layout's bottom bar, or null if
+ * the template isn't horizontal / has no bar color. The bar is baked into the menu
+ * background clip (so it sits behind the IG buttons at all times). Returns a filter
+ * fragment like `drawbox=x=0:y=940:w=iw:h=140:color=0x00b4d8@0.96:t=fill`.
+ *
+ * @param {object} btn - template.button
+ * @param {number} [FH=1080]
+ * @returns {string|null}
+ */
+function _barDrawboxFilter(btn, FH = 1080) {
+  if (!btn || btn.layout !== 'horizontal' || !btn.barColor) return null;
+  const barH = (btn.barHeight != null) ? btn.barHeight : 140;
+  const barY = FH - barH;
+  const op = (typeof btn.barOpacity === 'number') ? btn.barOpacity : 1;
+  return `drawbox=x=0:y=${barY}:w=iw:h=${barH}:color=0x${btn.barColor}@${op}:t=fill`;
+}
+
+/**
  * Generate the menu background clip (the video the IG is later injected into).
  *
  * Solid backgrounds reproduce the v1.12.0 navy-frame logic with the template's
@@ -1477,6 +1542,11 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
     if (fs.existsSync(resolved)) imgPath = resolved;   // present → encode it; missing → fall through to solid
   }
 
+  // Horizontal layout (v1.22.0): a colored bar is baked into the bottom of the clip,
+  // on top of whatever background was drawn, behind the IG buttons. Appended to both
+  // the solid and image filter chains. Missing barColor → null → no bar (graceful).
+  const barF = _barDrawboxFilter(template.button, H);
+
   let args;
   if (imgPath) {
     validateBackgroundImage(imgPath, ffprobePath);
@@ -1490,7 +1560,7 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
     const filter =
       `color=c=0x${bg.color}:s=${W}x${H}[bgc];` +
       `[0:v]${scaleExpr}[fg];` +
-      `[bgc][fg]overlay=(W-w)/2:(H-h)/2,scale=${W}:${H}:out_range=tv,format=yuv420p[v]`;
+      `[bgc][fg]overlay=(W-w)/2:(H-h)/2,scale=${W}:${H}:out_range=tv,format=yuv420p${barF ? ',' + barF : ''}[v]`;
     args = [
       '-y',
       '-loop', '1', '-i', imgPath,
@@ -1498,6 +1568,18 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
       '-filter_complex', filter,
       '-map', '[v]', '-map', '1:a',
       '-t', String(duration), '-r', String(fps),
+      ...MENU_ENCODE_ARGS,
+      outputPath,
+    ];
+  } else if (barF) {
+    // Solid + horizontal bar: draw the bar over the color plate via filter_complex.
+    args = [
+      '-y',
+      '-f', 'lavfi', '-i', `color=c=0x${bg.color}:size=${W}x${H}:rate=${fps}`,
+      '-f', 'lavfi', '-i', anull,
+      '-filter_complex', `[0:v]${barF},format=yuv420p[v]`,
+      '-map', '[v]', '-map', '1:a',
+      '-t', String(duration),
       ...MENU_ENCODE_ARGS,
       outputPath,
     ];

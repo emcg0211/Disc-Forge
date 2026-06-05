@@ -1,0 +1,80 @@
+{
+  "id": "sony-platinum",
+  "name": "Sony Platinum",
+  "description": "Sony Pictures clean monochrome: charcoal bar, silver selection, crisp white labels. Spider-Man / Once Upon a Time vibe.",
+  "schemaVersion": 1,
+  "category": "studio",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 23,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 40,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 181,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 170,
+    "height": 112,
+    "gap": 20,
+    "border": 1,
+    "borderEntry": 1,
+    "shape": "rect",
+    "layout": "horizontal",
+    "barColor": "2a2a2a",
+    "barOpacity": 0.98,
+    "barHeight": 132,
+    "iconSize": 48,
+    "count": 4,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        28,
+        28,
+        28
+      ],
+      "hex": "1c1c1c"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        192,
+        192,
+        192
+      ],
+      "hex": "c0c0c0"
+    }
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#ffffff"
+  },
+  "background": {
+    "type": "solid",
+    "color": "080808",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

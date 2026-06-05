@@ -1,0 +1,81 @@
+{
+  "id": "wb-studio",
+  "name": "WB Studio",
+  "description": "Warner-style studio bar: cyan strip across the bottom with pill buttons that light up cyan when selected. Mad Max / Dark Knight / Dune vibe.",
+  "schemaVersion": 1,
+  "category": "studio",
+  "palette": [
+    {
+      "id": 0,
+      "Y": 24,
+      "Cr": 125,
+      "Cb": 133,
+      "T": 255
+    },
+    {
+      "id": 1,
+      "Y": 235,
+      "Cr": 128,
+      "Cb": 128,
+      "T": 255
+    },
+    {
+      "id": 2,
+      "Y": 36,
+      "Cr": 122,
+      "Cb": 137,
+      "T": 255
+    },
+    {
+      "id": 3,
+      "Y": 128,
+      "Cr": 46,
+      "Cb": 170,
+      "T": 255
+    }
+  ],
+  "button": {
+    "width": 180,
+    "height": 118,
+    "gap": 28,
+    "border": 0,
+    "borderEntry": 1,
+    "shape": "pill",
+    "layout": "horizontal",
+    "barColor": "00b4d8",
+    "barOpacity": 0.96,
+    "barHeight": 148,
+    "iconSize": 54,
+    "count": 4,
+    "normalFill": {
+      "entry": 2,
+      "rgb": [
+        13,
+        25,
+        41
+      ],
+      "hex": "0d1929"
+    },
+    "selectedFill": {
+      "entry": 3,
+      "rgb": [
+        0,
+        180,
+        216
+      ],
+      "hex": "00b4d8"
+    },
+    "cornerRadius": 40
+  },
+  "font": {
+    "file": "MenuFont.ttf",
+    "sizeRatio": 0.5,
+    "color": "#ffffff"
+  },
+  "background": {
+    "type": "solid",
+    "color": "050a14",
+    "imagePath": null,
+    "fit": "cover"
+  }
+}

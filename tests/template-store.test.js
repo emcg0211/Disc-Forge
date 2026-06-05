@@ -32,8 +32,8 @@ console.log('\n=== 1: listBuiltIn ===');
 {
   const bi = store.listBuiltIn();
   const ids = bi.map(t => t.id).sort();
-  assert(ids.length === 20, 'listBuiltIn: 20 built-in templates');
-  for (const id of ['classic', 'minimal', 'theatrical']) {
+  assert(ids.length === 24, 'listBuiltIn: 24 built-in templates');
+  for (const id of ['classic', 'minimal', 'theatrical', 'wb-studio', 'universal-dark', 'sony-platinum', 'criterion-horizontal']) {
     assert(ids.includes(id), `listBuiltIn: includes ${id}`);
   }
   assert(bi.every(t => typeof t.category === 'string' && t.category.trim().length > 0),
@@ -245,6 +245,60 @@ console.log('\n=== 12: duplicate(built-in image) → solid ===');
   // carry a dangling image reference.
   const dupId = store.duplicate('theatrical', 'My Theatrical');
   assertEq(store.loadById(dupId).background.type, 'solid', 'duplicate of built-in image → solid background');
+}
+
+// ── 13: horizontal layout schema (v1.22.0 studio bar) ─────────────────────────────
+console.log('\n=== 13: horizontal layout schema ===');
+{
+  const withBtn = (extra) => { const t = loadTemplate('classic'); Object.assign(t.button, extra); return t; };
+
+  // valid horizontal: layout + required barColor + optional bar/icon fields
+  assert(!!validateTemplate(withBtn({ layout: 'horizontal', barColor: '00b4d8', barOpacity: 0.9, barHeight: 140, iconSize: 52, count: 4 })),
+    'accepts horizontal with valid bar fields');
+  // explicit vertical with no bar fields
+  assert(!!validateTemplate(withBtn({ layout: 'vertical' })), 'accepts explicit vertical (no bar fields)');
+  // absent layout (backward compat — classic ships without it)
+  assert(!!validateTemplate(loadTemplate('classic')), 'accepts absent layout (backward compat)');
+  // vertical may carry stray bar fields (future-proof: ignored, not rejected)
+  assert(!!validateTemplate(withBtn({ layout: 'vertical', barColor: 'abcdef', barHeight: 999 })),
+    'vertical ignores stray bar fields');
+
+  rejects(() => validateTemplate(withBtn({ layout: 'diagonal' })), 'unknown layout value');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal' })), 'horizontal missing barColor');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: 'zzzzzz' })), 'horizontal invalid barColor hex');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: '111111', barOpacity: 1.5 })), 'barOpacity > 1');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: '111111', barOpacity: -0.1 })), 'barOpacity < 0');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: '111111', barHeight: 40 })), 'barHeight < 50');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: '111111', barHeight: 500 })), 'barHeight > 400');
+  rejects(() => validateTemplate(withBtn({ layout: 'horizontal', barColor: '111111', iconSize: 10 })), 'iconSize < 20');
+  rejects(() => validateTemplate(withBtn({ count: 9 })), 'count > 8');
+  rejects(() => validateTemplate(withBtn({ count: 0 })), 'count < 1');
+
+  // the 4 shipped horizontal templates all declare layout horizontal + a bar color
+  for (const id of ['wb-studio', 'universal-dark', 'sony-platinum', 'criterion-horizontal']) {
+    const t = loadTemplate(id);
+    assertEq(t.button.layout, 'horizontal', `${id}: layout horizontal`);
+    assert(/^[0-9a-f]{6}$/i.test(t.button.barColor), `${id}: has a 6-hex bar color`);
+  }
+}
+
+// ── 14: computeAutoPositions horizontal vs vertical ───────────────────────────────
+console.log('\n=== 14: computeAutoPositions layout ===');
+const { computeAutoPositions } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
+{
+  const FW = 1920, bw = 180;
+  const tpl = { button: { layout: 'horizontal', width: bw, height: 110, gap: 24, barHeight: 140, count: 4 } };
+  const h = computeAutoPositions(tpl, 4);
+  assertEq(h.length, 4, 'horizontal: 4 positions');
+  assert(h[0].y === h[1].y && h[1].y === h[2].y && h[2].y === h[3].y, 'horizontal: all buttons share one Y (a row)');
+  assert(h[0].x < h[1].x && h[1].x < h[2].x && h[2].x < h[3].x, 'horizontal: left-to-right order');
+  // first and last button symmetric about the horizontal centre
+  assert(Math.abs(h[0].x - (FW - (h[3].x + bw))) < 2, 'horizontal: row is centered (symmetric margins)');
+
+  // vertical (legacy positional form) is unchanged: a single-column stack
+  const v = computeAutoPositions(3, 800, 90, 30);
+  assert(v[0].x === v[1].x && v[1].x === v[2].x, 'vertical: shared X (a column)');
+  assert(v[0].y < v[1].y && v[1].y < v[2].y, 'vertical: top-to-bottom order');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
