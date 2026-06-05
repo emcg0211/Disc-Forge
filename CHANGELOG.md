@@ -12,6 +12,13 @@
   template editor
 - Horizontal layout renders in the live preview, thumbnail grid, and on
   the burned disc
+- Re-add deleted buttons in the layout editor: a "Deleted buttons" section
+  shows a restore chip per hidden button, so individual buttons can be
+  brought back without reverting the whole template
+- Delete custom templates: user (non-built-in) templates can be removed
+  from the template list via a ✕ button (built-ins stay protected)
+- Menu/designer scroll position is preserved across tab switches and
+  re-renders instead of jumping back to the top
 - 911 tests
 
 ## v1.21.0 — 2026-06-05

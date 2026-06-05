@@ -918,6 +918,16 @@ function _horizontalSamples(b) {
   return Array.from({ length: n }, (_, i) => [i === 0 ? b.selectedFill : b.normalFill, _HORIZ_LABELS[i % _HORIZ_LABELS.length]]);
 }
 
+// Human label for a sample button index, used by the "Deleted buttons" restore
+// chips. Mirrors the sample labels drawn by renderMenuPreviewLocal so a chip names
+// the button the user actually removed; falls back to a 1-based ordinal.
+const _VERT_LABELS = ['Play Movie', 'Scene Selection', 'Special Features'];
+function _sampleButtonLabel(tpl, i) {
+  const b = (tpl && tpl.button) || {};
+  if (b.layout === 'horizontal') return _HORIZ_LABELS[i % _HORIZ_LABELS.length];
+  return _VERT_LABELS[i] || `Button ${i + 1}`;
+}
+
 // Paint the template's background (image-cover or solid colour) onto a 1920×1080
 // context. Shared by the main-menu and chapter-menu previews.
 async function _drawPreviewBackground(ctx, tpl, FW, FH) {
@@ -1607,6 +1617,20 @@ function previewHTML() {
     ? 'Rendering…'
     : (menu ? 'Preview — 3 sample buttons, center of 1920×1080 frame'
             : 'Full-screen preview unavailable on this Mac — the disc menu will still build correctly. See button states below.');
+  // Deleted-buttons section: one restore chip per button hidden via the ✕ badge or
+  // Delete key. Restoring removes the index from deletedBtns (see attachListeners)
+  // so the button reappears in the preview. Hidden entirely when nothing is deleted.
+  const deleted = (ed.deletedBtns || []).slice().sort((a, b) => a - b);
+  const deletedSection = deleted.length ? `
+    <div class="tpl-deleted">
+      <span class="tpl-deleted-title">Deleted buttons</span>
+      <div class="tpl-deleted-chips">
+        ${deleted.map(i => `<button class="tpl-deleted-chip" data-restore-btn="${i}" title="Restore this button">
+          <span class="tpl-deleted-name">${esc(_sampleButtonLabel(ed.draft, i))}</span>
+          <span class="tpl-deleted-add">+ Restore</span>
+        </button>`).join('')}
+      </div>
+    </div>` : '';
   const btn = (src, label) => `<div class="tpl-preview-col">
       <span class="tpl-preview-label">${label}</span>
       ${src ? `<img class="tpl-preview-img" src="${src}" alt="${label} button preview">`
@@ -1625,6 +1649,7 @@ function previewHTML() {
       <div class="tv-stand-shadow"></div>
     </div>
     <div class="tpl-menu-preview-caption">${esc(caption)}</div>
+    ${deletedSection}
     <details class="tpl-btn-detail">
       <summary>Button states</summary>
       <div class="tpl-preview-row">${btn(ed.previews.normal, 'Normal')}${btn(ed.previews.selected, 'Selected')}</div>
@@ -3251,6 +3276,16 @@ function attachListeners() {
   document.getElementById('tpl-revert')?.addEventListener('click', revertTemplate);
   document.getElementById('tpl-save')?.addEventListener('click', saveTemplate);
   document.getElementById('tpl-delete')?.addEventListener('click', deleteTemplate);
+
+  // Restore chips — bring back an individual button hidden in the layout editor.
+  document.querySelectorAll('[data-restore-btn]').forEach(el => {
+    el.addEventListener('click', () => {
+      const i = parseInt(el.getAttribute('data-restore-btn'), 10);
+      const ed = state.templateEditor;
+      ed.deletedBtns = ed.deletedBtns.filter(x => x !== i);
+      refreshPreviews();
+    });
+  });
 
   // Lazily render any missing browser thumbnails once the canvases exist.
   if (state.tab === 'templates') ensureThumbnails();

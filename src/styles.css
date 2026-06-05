@@ -1394,6 +1394,21 @@ body.light-mode .tab-count { background: rgba(160,120,32,0.1) !important; color:
 .tpl-preset-chip:hover { border-color: var(--gold-dim); color: var(--text-primary); }
 .tpl-preset-dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.22); flex-shrink: 0; }
 
+/* ── Layout editor: restore deleted buttons ──────────────────────────────── */
+.tpl-deleted { margin-top: 10px; }
+.tpl-deleted-title { display: block; font-size: 11px; color: var(--text-tertiary); margin-bottom: 6px; }
+.tpl-deleted-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tpl-deleted-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 9px; font-size: 11px;
+  border: 1px solid var(--border-mid); border-radius: 14px;
+  background: var(--bg-overlay); color: var(--text-secondary);
+  cursor: pointer; transition: all var(--t-fast); font-family: var(--font-ui);
+}
+.tpl-deleted-chip:hover { border-color: var(--gold-dim); color: var(--text-primary); }
+.tpl-deleted-add { color: var(--gold-dim); font-weight: 600; }
+.tpl-deleted-chip:hover .tpl-deleted-add { color: var(--gold); }
+
 /* ── Design editor: accordions ───────────────────────────────────────────── */
 .tpl-acc { border: 1px solid var(--border-dim); border-radius: var(--radius-md); margin-bottom: 8px; overflow: hidden; }
 .tpl-acc-head {
