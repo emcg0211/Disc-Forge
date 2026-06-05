@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.20.0 — 2026-06-04
+
+**Professional template library + layout-editor button deletion**
+
+- 8 new professional built-in menu templates: Cinema Noir, Midnight Blue, Warm Amber, Slate Modern, Blood Sport, Forest Dark, Vintage Gold, Neon Noir (20 built-ins total)
+- Layout editor: select a button and press Delete/Backspace — or click the red ✕ badge on its top-right corner — to remove it; the button is hidden from the preview and reset to auto-layout, and "Revert to saved" restores all buttons
+- 802 tests
+
 ## v1.19.0 — 2026-06-04
 
 **Chapter selection sub-menu — encoder/UI building blocks**
