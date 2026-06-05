@@ -1549,3 +1549,36 @@ body.light-mode .tpl-swatch-text { color: #fff; }
   transition: color var(--t-fast);
 }
 .kofi-link:hover { color: var(--gold-bright); text-decoration: underline; }
+
+/* ── Auto-update banner (v1.19.0) ───────────────────────────────────────────── */
+#update-banner {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--gold-dim);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 9999;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+#update-banner a {
+  color: var(--gold-bright);
+  text-decoration: none;
+  font-weight: 600;
+}
+#update-banner a:hover { text-decoration: underline; }
+#update-banner button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+}

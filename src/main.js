@@ -590,6 +590,34 @@ ipcMain.handle('reveal-in-finder', async (_, filePath) => shell.showItemInFolder
 // shell is already imported at the top of this file.
 ipcMain.handle('open-external', (e, url) => shell.openExternal(url));
 
+// Auto-update check — fetch the latest GitHub release (no extra deps; node https).
+// Always resolves (never rejects) so a network failure silently no-ops in the UI.
+ipcMain.handle('check-for-update', async () => {
+  try {
+    const https = require('https');
+    return await new Promise((resolve) => {
+      const options = {
+        hostname: 'api.github.com',
+        path: '/repos/emcg0211/Disc-Forge/releases/latest',
+        headers: { 'User-Agent': 'Disc-Forge-App' },
+      };
+      https.get(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const release = JSON.parse(data);
+            resolve({
+              latestVersion: release.tag_name?.replace(/^v/, '') || null,
+              releaseUrl: release.html_url || null,
+            });
+          } catch { resolve({ latestVersion: null, releaseUrl: null }); }
+        });
+      }).on('error', () => resolve({ latestVersion: null, releaseUrl: null }));
+    });
+  } catch { return { latestVersion: null, releaseUrl: null }; }
+});
+
 // ── IPC: probe ────────────────────────────────────────────────────────────────
 
 ipcMain.handle('probe-file', async (_, filePath) => {

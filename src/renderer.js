@@ -239,6 +239,47 @@ async function boot() {
   if (savedTheme === 'light') state.lightMode = true;
   else if (savedTheme === 'dark') state.lightMode = false;
   document.body.classList.toggle('light-mode', state.lightMode);
+
+  // Non-blocking update check (slight delay so it never blocks first paint).
+  setTimeout(checkForUpdate, 3000);
+}
+
+// ── Update checker (v1.19.0) ──────────────────────────────────────────────────
+// Queries the latest GitHub release on boot and shows a dismissible banner when a
+// newer version is available. Fails silently on any network/parse error.
+async function checkForUpdate() {
+  try {
+    const current = state.appVersion; // already populated on boot
+    const { latestVersion, releaseUrl } = await window.discForge.checkForUpdate();
+    if (!latestVersion || !current) return;
+    // Simple numeric semver comparison — split on dots, compare major/minor/patch.
+    const parse = v => v.split('.').map(Number);
+    const [cMaj, cMin, cPatch] = parse(current);
+    const [lMaj, lMin, lPatch] = parse(latestVersion);
+    const isNewer =
+      lMaj > cMaj ||
+      (lMaj === cMaj && lMin > cMin) ||
+      (lMaj === cMaj && lMin === cMin && lPatch > cPatch);
+    if (isNewer) showUpdateBanner(latestVersion, releaseUrl);
+  } catch {}
+}
+
+function showUpdateBanner(version, url) {
+  if (document.getElementById('update-banner')) return; // don't show twice
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.innerHTML = `
+    <span>⬆ Disc Forge ${version} is available.</span>
+    <a id="update-download-link" href="#">Download</a>
+    <button id="update-dismiss">✕</button>`;
+  document.body.appendChild(banner);
+  document.getElementById('update-download-link')
+    .addEventListener('click', (e) => {
+      e.preventDefault();
+      if (url) window.discForge.openExternal(url);
+    });
+  document.getElementById('update-dismiss')
+    .addEventListener('click', () => banner.remove());
 }
 
 // ── File pickers ──────────────────────────────────────────────────────────────
