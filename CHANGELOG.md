@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.23.0 — TBD
+
+**Chapter thumbnails + direct BD-R burning**
+
+- Chapter thumbnail images: the scene-selection menu shows a frame grab from
+  the video at each chapter point, composited into the menu background grid
+  (under a dark scrim so button text stays readable); falls back silently to
+  solid color when no video is available or a frame grab fails
+- Live chapter-menu preview now paints those frame grabs behind each cell,
+  matching the burned disc
+- Direct BD-R burning: burn your finished ISO straight to disc from inside the
+  app via macOS `hdiutil` — with a burner-detection check, a confirmation
+  prompt, progress display, and no auto-eject or auto-verify (you stay in
+  control of the disc)
+- 984 tests
+
 ## v1.22.0 — 2026-06-05
 
 **Horizontal button layout — studio disc style**

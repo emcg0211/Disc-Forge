@@ -565,6 +565,61 @@ ipcMain.handle('burn-iso', async (_, isoPath) => {
   });
 });
 
+// ── IPC: chapter thumbnail extraction (v1.23.0 scene-selection previews) ──────
+// Extract one frame from the source video at a chapter timestamp, scaled to the
+// button cell size, returned as a base64 JPEG data URL (or null on any failure).
+// Hard-timeout at 8s so the UI never blocks; never throws.
+
+ipcMain.handle('chapter:extractThumb', async (_, { videoPath, timestamp, width, height } = {}) => {
+  if (!TOOLS.ffmpeg) return null;
+  try {
+    const { extractChapterThumbnail } = require('./lib/menu-builder');
+    return extractChapterThumbnail({
+      videoPath, timestamp, width, height,
+      ffmpegPath: TOOLS.ffmpeg, timeoutMs: 8000,
+    });
+  } catch {
+    return null;
+  }
+});
+
+// ── IPC: direct BD-R burning (v1.23.0) ────────────────────────────────────────
+// disc:checkBurner detects a connected optical burner; disc:burn writes an ISO to
+// disc via hdiutil with -noverify/-noeject (never auto-verify or auto-eject). Both
+// delegate to src/lib/burn.js (testable, Electron-free) and never throw.
+
+ipcMain.handle('disc:checkBurner', async () => {
+  try {
+    const { checkBurner } = require('./lib/burn');
+    return await checkBurner();
+  } catch {
+    return { found: false, name: null };
+  }
+});
+
+ipcMain.handle('disc:burn', async (_, { isoPath } = {}) => {
+  const { burnDisc } = require('./lib/burn');
+  sendLog(`[burn] starting: ${isoPath}`);
+  try { mainWindow?.webContents.send('burn-progress', { status: 'starting', message: 'Preparing to burn…', percent: 0 }); } catch (_) {}
+  const result = await burnDisc({
+    isoPath,
+    hdiutilPath: TOOLS.hdiutil || '/usr/bin/hdiutil',
+    onLog: (line) => {
+      sendLog('[burn] ' + line);
+      try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: line, percent: null }); } catch (_) {}
+    },
+  });
+  try {
+    if (result.success) {
+      mainWindow?.webContents.send('burn-progress', { status: 'done', message: 'Burn complete. You may eject the disc.', percent: 100 });
+    } else {
+      mainWindow?.webContents.send('burn-progress', { status: 'error', message: result.error });
+    }
+  } catch (_) {}
+  sendLog(result.success ? '[burn] complete' : '[burn] failed: ' + result.error);
+  return result;
+});
+
 
 ipcMain.handle('save-project-file', async (_, json) => {
   const r = await dialog.showSaveDialog(mainWindow, {

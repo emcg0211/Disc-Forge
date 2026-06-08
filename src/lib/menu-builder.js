@@ -1606,6 +1606,172 @@ function generateMenuVideo({ template, ffmpegPath, ffprobePath, outputPath, dura
   return outputPath;
 }
 
+// ── Chapter thumbnail extraction + grid background (v1.23.0) ─────────────────────
+// Scene-selection menus on commercial Blu-rays show a frame grab from the video at
+// each chapter point. These helpers reproduce that: extractChapterThumbnail grabs a
+// single frame as a JPEG (returned as a data URL for the renderer preview);
+// generateChapterMenuVideo composites one frame per chapter into the menu background
+// clip — at the exact grid cells the IG buttons sit over — with a dark scrim so the
+// button borders/labels stay readable. Both degrade gracefully: a missing/unreadable
+// video, a missing ffmpeg, or a failed frame grab falls back to the solid-color cell
+// (never crashes a build).
+
+/**
+ * Extract one frame from a video at a timestamp and return it as a base64 JPEG
+ * data URL, scaled to width×height. Returns null on ANY failure (missing ffmpeg,
+ * missing/unreadable source, ffmpeg error, timeout) — it never throws, so the
+ * renderer preview can fall back to solid-color buttons.
+ *
+ * @param {object}  opts
+ * @param {string}  opts.videoPath   - source video path
+ * @param {string|number} opts.timestamp - seek time (timecode "00:01:23" or seconds)
+ * @param {number}  opts.width       - thumbnail width (the button cell width)
+ * @param {number}  opts.height      - thumbnail height (the button cell height)
+ * @param {string}  opts.ffmpegPath  - ffmpeg binary
+ * @param {string}  [opts.tmpDir]    - scratch dir (default: a fresh os.tmpdir mkdtemp)
+ * @param {number}  [opts.timeoutMs=8000] - hard timeout so the UI never blocks
+ * @returns {string|null} data URL ("data:image/jpeg;base64,…") or null on any failure
+ */
+function extractChapterThumbnail({ videoPath, timestamp = 0, width = 320, height = 180, ffmpegPath, tmpDir = null, timeoutMs = 8000 } = {}) {
+  const os = require('os');
+  let out = null;
+  let ownDir = null;
+  try {
+    if (!ffmpegPath || !fs.existsSync(ffmpegPath)) return null;
+    if (!videoPath || !fs.existsSync(videoPath)) return null;
+    const w = Math.max(1, Math.round(width)  || 1);
+    const h = Math.max(1, Math.round(height) || 1);
+    const dir = tmpDir || (ownDir = fs.mkdtempSync(path.join(os.tmpdir(), 'discforge_thumb_')));
+    out = path.join(dir, `thumb_${process.pid}_${Date.now()}.jpg`);
+    execFileSync(ffmpegPath, [
+      '-y', '-ss', String(timestamp), '-i', videoPath,
+      '-frames:v', '1', '-q:v', '2',
+      '-vf', `scale=${w}:${h},setsar=1`,
+      out,
+    ], { stdio: ['ignore', 'ignore', 'pipe'], timeout: timeoutMs });
+    if (!fs.existsSync(out)) return null;
+    return `data:image/jpeg;base64,${fs.readFileSync(out).toString('base64')}`;
+  } catch {
+    return null;
+  } finally {
+    try { if (out && fs.existsSync(out)) fs.unlinkSync(out); } catch {}
+    try { if (ownDir) fs.rmSync(ownDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
+ * Generate the chapter-selection menu background clip: a 1920×1080 locked clip
+ * (same MENU_VIDEO spec / MENU_ENCODE_ARGS as generateMenuVideo) whose background
+ * is a grid of per-chapter frame grabs, one in each IG button cell, under a dark
+ * scrim. The IG overlay (buildChapterMenuDisplaySet) is drawn over this clip
+ * unchanged — it still paints the button borders + labels.
+ *
+ * Frame extraction is graceful: each cell whose frame grab fails simply keeps its
+ * solid fill (template normalFill, else #1a1a2e). With no usable video at all the
+ * result is a solid-color background (cells + scrim) — still a valid locked clip,
+ * never a crash.
+ *
+ * @param {object}  opts
+ * @param {object}  opts.template    - validated template (background + button geometry)
+ * @param {string}  opts.ffmpegPath  - ffmpeg binary
+ * @param {string}  [opts.ffprobePath] - accepted for API symmetry; unused here
+ * @param {string}  opts.outputPath  - output clip path (.mkv recommended)
+ * @param {number}  [opts.duration=5] - clip duration in seconds
+ * @param {string}  [opts.videoPath] - source video for frame grabs (null → solid cells)
+ * @param {Array}   [opts.chapters]  - chapter list (time/startTime drives each grab)
+ * @param {number}  [opts.videoWidth=1920]
+ * @param {number}  [opts.videoHeight=1080]
+ * @param {string}  [opts.tmpDir]    - scratch dir for thumbs (default: fresh mkdtemp)
+ * @returns {string} outputPath
+ */
+function generateChapterMenuVideo({ template, ffmpegPath, ffprobePath = null, outputPath, duration = 5, videoPath = null, chapters = [], videoWidth = 1920, videoHeight = 1080, tmpDir = null } = {}) {
+  if (!template || !template.background) throw new Error('generateChapterMenuVideo: template with a background is required');
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) throw new Error(`generateChapterMenuVideo: ffmpeg not available at ${ffmpegPath}`);
+  if (!outputPath) throw new Error('generateChapterMenuVideo: outputPath is required');
+
+  const os = require('os');
+  const style = styleFromTemplate(template);
+  const cellW = style.w, cellH = style.h;
+  const { width: W, height: H, fps } = MENU_VIDEO;
+  const bgColor = template.background.color;
+  const nf = template.button && template.button.normalFill;
+  const cellColor = (nf && typeof nf.hex === 'string' && /^[0-9a-fA-F]{6}$/.test(nf.hex)) ? nf.hex : '1a1a2e';
+  const anull = 'anullsrc=channel_layout=stereo:sample_rate=48000';
+
+  // Cell positions = the chapter button bounding rects (exclude the trailing back
+  // button). buildChapterMenuButtons is the single source of truth for the layout.
+  const list = Array.isArray(chapters) ? chapters : [];
+  const built = buildChapterMenuButtons(list, { template, videoWidth, videoHeight });
+  const cellPositions = built.positions.slice(0, built.backIndex);
+
+  const ownDir = tmpDir ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'discforge_chmenu_'));
+  const dir = tmpDir || ownDir;
+  const haveVideo = !!(videoPath && fs.existsSync(videoPath));
+
+  // One frame grab per chapter cell. A failure leaves that cell as its solid fill.
+  const overlays = [];
+  if (haveVideo) {
+    cellPositions.forEach((pos, i) => {
+      const ch = list[i] || {};
+      const ts = (ch.time != null && ch.time !== '') ? ch.time : (ch.startTime != null ? ch.startTime : 0);
+      const thumb = path.join(dir, `thumb_${i}.jpg`);
+      try {
+        execFileSync(ffmpegPath, [
+          '-y', '-ss', String(ts), '-i', videoPath,
+          '-frames:v', '1', '-q:v', '2',
+          '-vf', `scale=${cellW}:${cellH},setsar=1`,
+          thumb,
+        ], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15000 });
+        if (fs.existsSync(thumb)) overlays.push({ x: pos.x, y: pos.y, path: thumb });
+      } catch { /* graceful: this cell stays solid */ }
+    });
+  }
+
+  // Composite filtergraph: solid background → solid cell boxes (so failed/absent
+  // grabs show a color) → overlay each successful thumb → dark scrim → yuv420p.
+  // Input map: 0 = color background, 1 = silent audio, 2.. = thumb images.
+  const parts = [];
+  let last = '0:v';
+  if (cellPositions.length) {
+    const boxes = cellPositions.map(p =>
+      `drawbox=x=${p.x}:y=${p.y}:w=${cellW}:h=${cellH}:color=0x${cellColor}:t=fill`).join(',');
+    parts.push(`[${last}]${boxes}[cells]`);
+    last = 'cells';
+  }
+  overlays.forEach((o, k) => {
+    const inIdx = 2 + k;
+    const lbl = `ov${k}`;
+    parts.push(`[${last}][${inIdx}:v]overlay=${o.x}:${o.y}[${lbl}]`);
+    last = lbl;
+  });
+  // Semi-transparent black scrim (rgba 0,0,0,0.35) over the whole frame.
+  parts.push(`[${last}]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.35:t=fill,format=yuv420p[v]`);
+  const filter = parts.join(';');
+
+  const args = [
+    '-y',
+    '-f', 'lavfi', '-i', `color=c=0x${bgColor}:s=${W}x${H}:rate=${fps}`,
+    '-f', 'lavfi', '-i', anull,
+    ...overlays.flatMap(o => ['-loop', '1', '-i', o.path]),
+    '-filter_complex', filter,
+    '-map', '[v]', '-map', '1:a',
+    '-t', String(duration), '-r', String(fps),
+    ...MENU_ENCODE_ARGS,
+    outputPath,
+  ];
+
+  try {
+    execFileSync(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    const detail = (e.stderr || '').toString().slice(-600);
+    throw new Error(`generateChapterMenuVideo: ffmpeg failed: ${detail || e.message}`);
+  } finally {
+    if (ownDir) { try { fs.rmSync(ownDir, { recursive: true, force: true }); } catch {} }
+  }
+  if (!fs.existsSync(outputPath)) throw new Error(`generateChapterMenuVideo: no output produced at ${outputPath}`);
+  return outputPath;
+}
+
 // ── Button preview rendering (v1.13.0 — for the template editor UI) ───────────────
 // YCbCr-601 (limited range) → RGB via the shared color module (single source of
 // truth, also exposed to the renderer's palette pickers).
@@ -1693,6 +1859,8 @@ module.exports = {
   buildChapterMenuButtons,
   computeChapterGridPositions,
   generateMenuVideo,
+  generateChapterMenuVideo,
+  extractChapterThumbnail,
   validateBackgroundImage,
   resolveBackgroundImagePath,
   backgroundsDir,

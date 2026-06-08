@@ -17,7 +17,7 @@ const os   = require('os');
 const { execFileSync } = require('child_process');
 
 const {
-  generateMenuVideo, validateBackgroundImage, MENU_ENCODE_ARGS,
+  generateMenuVideo, generateChapterMenuVideo, validateBackgroundImage, MENU_ENCODE_ARGS,
 } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
 const { loadTemplate } = require(path.join(__dirname, '..', 'src', 'lib', 'template.js'));
 
@@ -219,6 +219,56 @@ console.log('\n=== 6: horizontal layout bar ===');
   const out3 = path.join(WORK, 'horiz_img.mkv');
   generateMenuVideo({ template: wbImg, ffmpegPath: FFMPEG, ffprobePath: FFPROBE, outputPath: out3, duration: 1 });
   assertLockedClip(out3, 'horizontal image + bar');
+}
+
+// ── 7: generateChapterMenuVideo (thumbnail grid background) ──────────────────────
+console.log('\n=== 7: generateChapterMenuVideo (chapter thumbnail grid) ===');
+{
+  const classic = loadTemplate('classic');
+  const chapters = [{ name: 'One', time: '00:00:00' }, { name: 'Two', time: '00:00:01' }, { name: 'Three', time: '00:00:02' }];
+
+  // 7a: NO video → solid-color background (cells + scrim), still a valid locked clip.
+  {
+    const out = path.join(WORK, 'chmenu_novideo.mkv');
+    let ok = true;
+    try {
+      generateChapterMenuVideo({ template: classic, ffmpegPath: FFMPEG, ffprobePath: FFPROBE,
+        outputPath: out, duration: 1, videoPath: null, chapters });
+    } catch (e) { ok = false; console.log('   ' + e.message); }
+    assert(ok, 'no-video chapter menu does not throw');
+    assertLockedClip(out, 'chapter menu (no video, solid fallback)');
+  }
+
+  // 7b: a non-existent video path is treated like no video (graceful) — valid clip.
+  {
+    const out = path.join(WORK, 'chmenu_missingvideo.mkv');
+    let ok = true;
+    try {
+      generateChapterMenuVideo({ template: classic, ffmpegPath: FFMPEG, ffprobePath: FFPROBE,
+        outputPath: out, duration: 1, videoPath: path.join(WORK, 'nope.mkv'), chapters });
+    } catch { ok = false; }
+    assert(ok, 'missing video path → graceful (no throw)');
+    assertLockedClip(out, 'chapter menu (missing video → solid fallback)');
+  }
+
+  // 7c: a REAL source video → frame grabs composited into the grid; valid locked clip.
+  {
+    const srcVideo = path.join(WORK, 'src.mkv');
+    execFileSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', 'testsrc=size=1280x720:rate=24:duration=3',
+      '-pix_fmt', 'yuv420p', srcVideo], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const out = path.join(WORK, 'chmenu_withvideo.mkv');
+    generateChapterMenuVideo({ template: classic, ffmpegPath: FFMPEG, ffprobePath: FFPROBE,
+      outputPath: out, duration: 1, videoPath: srcVideo, chapters });
+    assertLockedClip(out, 'chapter menu (with video thumbnails)');
+  }
+
+  // 7d: no chapters at all → plain solid background, still a valid locked clip.
+  {
+    const out = path.join(WORK, 'chmenu_nochapters.mkv');
+    generateChapterMenuVideo({ template: classic, ffmpegPath: FFMPEG, ffprobePath: FFPROBE,
+      outputPath: out, duration: 1, videoPath: null, chapters: [] });
+    assertLockedClip(out, 'chapter menu (no chapters)');
+  }
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────

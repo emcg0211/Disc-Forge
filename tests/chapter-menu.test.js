@@ -20,7 +20,7 @@ const {
 } = require(path.join(__dirname, '..', 'src', 'lib', 'ig-encoder.js'));
 const {
   buildChapterMenuDisplaySet, buildChapterMenuButtons, computeChapterGridPositions,
-  computeAutoPositions, buildMenuDisplaySet,
+  computeAutoPositions, buildMenuDisplaySet, extractChapterThumbnail,
 } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
 
 let passed = 0, failed = 0;
@@ -206,6 +206,51 @@ console.log('\n=== Regression: buildMenuDisplaySet (episode menu) unaffected ===
   assert(containsCmd(a, buildNavCmd('PLAY_PL', 1)), 'episode menu still uses PLAY_PL(1)');
   assert(containsCmd(a, buildNavCmd('PLAY_PL', 3)), 'episode menu still uses PLAY_PL(3)');
   assert(!containsCmd(a, buildNavCmd('PLAY_PL_MARK', 1, 0)), 'episode menu does NOT use PLAY_PL_MARK');
+}
+
+// ─── Part 5: chapter thumbnail cells + graceful extraction (v1.23.0) ──────────
+console.log('\n=== Part 5a: computeChapterGridPositions cell rects (x,y,w,h) ===');
+{
+  // Each chapter button's bounding rect IS its thumbnail cell: x,y from the grid,
+  // w,h from the button geometry passed in. Verify the full rect against known input.
+  const bw = 800, bh = 90, gap = 30;
+  const g = computeChapterGridPositions(4, bw, bh, gap);
+  // 2 cols × 2 rows; totalW = 1630 → startX = 145; totalH = 210 → startY = 435.
+  const cells = g.map(p => ({ x: p.x, y: p.y, width: bw, height: bh }));
+  assertEq(cells.length, 4, 'one cell per chapter');
+  assertEq(cells[0].x, 145, 'cell 0 x = 145');
+  assertEq(cells[0].y, 435, 'cell 0 y = 435');
+  assertEq(cells[0].width, 800, 'cell 0 width = button width');
+  assertEq(cells[0].height, 90, 'cell 0 height = button height');
+  assertEq(cells[1].x, 145 + bw + gap, 'cell 1 x = next column');
+  assertEq(cells[1].y, 435, 'cell 1 y = same row as cell 0');
+  assertEq(cells[3].y, 435 + bh + gap, 'cell 3 y = second row');
+  // Different geometry flows straight through to the cell size.
+  const g2 = computeChapterGridPositions(2, 480, 270, 20);
+  assert(g2.every(p => Number.isInteger(p.x) && Number.isInteger(p.y)), 'grid positions are integers');
+}
+
+console.log('\n=== Part 5b: extractChapterThumbnail graceful fallback ===');
+{
+  // A non-existent source video must return null (never throw) so the build/preview
+  // can fall back to solid-color buttons.
+  let threw = false, res;
+  try {
+    res = extractChapterThumbnail({
+      videoPath: path.join(__dirname, 'no-such-video-xyz.mkv'),
+      timestamp: 5, width: 320, height: 180, ffmpegPath: '/usr/bin/true',
+    });
+  } catch { threw = true; }
+  assert(!threw, 'extractChapterThumbnail does not throw on a missing video');
+  assertEq(res, null, 'missing video → returns null');
+
+  // Missing ffmpeg binary → null, no throw.
+  let threw2 = false, res2;
+  try {
+    res2 = extractChapterThumbnail({ videoPath: __filename, timestamp: 0, width: 10, height: 10, ffmpegPath: '/no/such/ffmpeg' });
+  } catch { threw2 = true; }
+  assert(!threw2, 'extractChapterThumbnail does not throw on a missing ffmpeg');
+  assertEq(res2, null, 'missing ffmpeg → returns null');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────

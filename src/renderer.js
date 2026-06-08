@@ -703,9 +703,14 @@ function _btnShapePath(ctx, x, y, w, h, shape, cornerRadius) {
 }
 
 // Draw one button (fill + border + centered label) at (x,y) on ctx.
-function drawTemplateButton(ctx, tpl, fill, label, x, y) {
+function drawTemplateButton(ctx, tpl, fill, label, x, y, opts = {}) {
   const b = tpl.button;
   const w = b.width, h = b.height, border = b.border || 0;
+  // fillAlpha (v1.23.0) lets the chapter-thumbnail preview draw buttons as
+  // transparent overlays — border + label only — so the frame grab shows through,
+  // mirroring the disc (IG buttons are transparent over the thumbnail background).
+  // Default 1 keeps every existing caller byte-identical (opaque fill).
+  const fillAlpha = (typeof opts.fillAlpha === 'number') ? opts.fillAlpha : 1;
   const shape = (b.shape === 'rounded' || b.shape === 'pill') ? b.shape : 'rect';
   const be = tpl.palette.find(e => e.id === b.borderEntry) || tpl.palette[1] || tpl.palette[0];
   const beCss = _yuvCss(be);
@@ -745,7 +750,9 @@ function drawTemplateButton(ctx, tpl, fill, label, x, y) {
 
   ctx.fillStyle = _fillCss(tpl, fill);
   if (shape === 'rect') {
-    ctx.fillRect(x, y, w, h);
+    if (fillAlpha > 0) {
+      ctx.save(); ctx.globalAlpha = fillAlpha; ctx.fillRect(x, y, w, h); ctx.restore();
+    }
     if (border > 0) {  // 4 inset bars so the thickness matches the disc
       ctx.fillStyle = beCss;
       ctx.fillRect(x, y, w, border);
@@ -754,8 +761,12 @@ function drawTemplateButton(ctx, tpl, fill, label, x, y) {
       ctx.fillRect(x + w - border, y, border, h);
     }
   } else {
-    _btnShapePath(ctx, x, y, w, h, shape, b.cornerRadius);
-    ctx.fill();
+    if (fillAlpha > 0) {
+      ctx.save(); ctx.globalAlpha = fillAlpha;
+      _btnShapePath(ctx, x, y, w, h, shape, b.cornerRadius);
+      ctx.fill();
+      ctx.restore();
+    }
     if (border > 0) {  // stroke the same outline, inset so it stays inside the shape
       ctx.strokeStyle = beCss;
       ctx.lineWidth = border;
@@ -977,11 +988,42 @@ async function renderChapterMenuPreviewLocal(tpl, chapters) {
   const lowestY = pos.reduce((m, p) => Math.max(m, p.y), 0);
   const backPos = { x: Math.round((FW - b.width) / 2), y: lowestY + b.height + b.gap * 2 };
 
+  // v1.23.0: when a source video is set, paint a frame-grab thumbnail behind each
+  // chapter cell (commercial-Blu-ray scene-selection look), then a dark scrim so the
+  // button borders/labels stay readable. Mirrors generateChapterMenuVideo on the
+  // disc. Falls back silently to the solid-color buttons if no video / a grab fails.
+  const proj = state.project || {};
+  const videoPath = proj.mainVideo?.path || (proj.titles && proj.titles[0]?.file?.path);
+  let drewThumbs = false;
+  if (videoPath && list.length && window.discForge.extractChapterThumb) {
+    for (let i = 0; i < labels.length && i < list.length; i++) {
+      const ch = list[i] || {};
+      const ts = (ch.time != null && ch.time !== '') ? ch.time : (ch.startTime != null ? ch.startTime : 0);
+      try {
+        const dataUrl = await window.discForge.extractChapterThumb({ videoPath, timestamp: ts, width: b.width, height: b.height });
+        if (dataUrl) {
+          const img = await _loadImage(dataUrl);
+          ctx.drawImage(img, pos[i].x, pos[i].y, b.width, b.height);
+          drewThumbs = true;
+        }
+      } catch (_) { /* this cell falls back to its solid button below */ }
+    }
+  }
+  if (drewThumbs) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, 0, FW, FH);
+    ctx.restore();
+  }
+
   labels.forEach((label, i) => {
     const fill = (i === 0) ? b.selectedFill : b.normalFill;  // first button highlighted
-    drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y);
+    // Over thumbnails: selected cell keeps a translucent highlight; normal cells draw
+    // border + label only (no fill) so the frame grab shows through.
+    const opts = drewThumbs ? { fillAlpha: (i === 0) ? 0.5 : 0 } : {};
+    drawTemplateButton(ctx, tpl, fill, label, pos[i].x, pos[i].y, opts);
   });
-  drawTemplateButton(ctx, tpl, b.normalFill, 'Main Menu', backPos.x, backPos.y);
+  drawTemplateButton(ctx, tpl, b.normalFill, 'Main Menu', backPos.x, backPos.y, drewThumbs ? { fillAlpha: 0 } : {});
   return cv.toDataURL('image/png');
 }
 
@@ -2282,7 +2324,7 @@ function sidebarHTML(p, canBuild) {
       ${!canBuild?'<p style="color:var(--text-tertiary);font-size:11px;text-align:center;margin-top:8px;line-height:1.5">Add a disc title and<br>at least one video to get started</p>':''}
       ${state.builtIsoPath ? `
         <button class="btn btn-ghost btn-full" id="burn-btn" style="margin-top:10px;border-color:rgba(220,80,80,0.4);color:#e05050">
-          💿 Burn to Disc
+          🔥 Burn to Disc
         </button>` : ''}
     </div>
   </div>`;
@@ -2837,21 +2879,25 @@ function burnModalHTML() {
   if (burnDone) return `<div class="modal-backdrop"><div class="modal-box">
     <div class="modal-success-ring">💿</div>
     <div class="modal-title" style="color:var(--gold-bright)">Burn Complete!</div>
-    <div class="modal-sub">Your disc has been burned and ejected.</div>
+    <div class="modal-sub">Burn complete. You may eject the disc.</div>
     <div class="modal-actions"><button class="btn btn-ghost" id="close-burn-modal">Done</button></div>
   </div></div>`;
 
   // Drive info panel
   const drivePanel = burnDriveInfo ? (() => {
     const d = burnDriveInfo;
-    const discOk = d.discStatus?.hasDisc;
     const driveName = d.drives?.[0]?.name || 'Optical Drive';
-    const discLabel = discOk
-      ? (d.discStatus.isBlank ? (d.discStatus.isBD ? 'Blank BD-R detected' : 'Blank disc detected') : 'Disc detected (check it is blank)')
-      : 'No disc detected — insert a blank BD-R';
+    // Disc-presence detection is not part of the hdiutil burn flow; show the burner
+    // name and a neutral status line. (Legacy discStatus is honored if present.)
+    const discOk = d.discStatus?.hasDisc;
+    const discLabel = d.discStatus
+      ? (discOk
+          ? (d.discStatus.isBlank ? (d.discStatus.isBD ? 'Blank BD-R detected' : 'Blank disc detected') : 'Disc detected (check it is blank)')
+          : 'No disc detected — insert a blank BD-R')
+      : 'Writing to the inserted BD-R…';
     return `<div style="background:var(--bg-sunken);border:1px solid var(--border-dim);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-secondary)">
       <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">💿 ${esc(driveName)}</div>
-      <div style="${discOk?'color:var(--green)':'color:var(--red)'}">${discLabel}</div>
+      <div style="${(d.discStatus && !discOk)?'color:var(--red)':'color:var(--text-secondary)'}">${discLabel}</div>
       ${d.deviceNode ? `<div style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:11px;margin-top:2px">${esc(d.deviceNode)}</div>` : ''}
     </div>`;
   })() : '';
@@ -3551,22 +3597,34 @@ function attachListeners() {
   // Burn to disc
   document.getElementById('burn-btn')?.addEventListener('click', async () => {
     if (!state.builtIsoPath) return;
-    window.discForge.removeAllListeners('burn-progress');
-    setState({ burning: true, burnStatus: 'checking', burnMessage: 'Detecting optical drives...', burnDone: false, burnError: null, burnPercent: 0, burnDriveInfo: null });
 
-    // Detect drives and show info
-    try {
-      const driveInfo = await window.discForge.detectDrives();
-      setState({ burnDriveInfo: driveInfo, burnMessage: 'Drive detected — starting burn...' });
-    } catch(_) {}
+    // 1. Require a connected burner — give the user a clear escape if there is none.
+    let burner = null;
+    try { burner = await window.discForge.checkBurner(); } catch (_) { burner = { found: false }; }
+    if (!burner || !burner.found) {
+      alert('No disc burner detected.\n\nConnect a Blu-ray burner and try again.');
+      return;
+    }
+
+    // 2. Confirm — burning overwrites any disc in the drive. Cancel = escape.
+    const ok = confirm('Insert a blank BD-R disc, then click OK to Burn.\n\nThis will overwrite any disc in the drive.');
+    if (!ok) return;
+
+    // 3. Burn via hdiutil (-noverify -noeject: never auto-verify or auto-eject).
+    window.discForge.removeAllListeners('burn-progress');
+    setState({
+      burning: true, burnStatus: 'starting', burnMessage: 'Preparing to burn…',
+      burnDone: false, burnError: null, burnPercent: 0,
+      burnDriveInfo: { drives: [{ name: burner.name || 'Optical Drive', isBDCapable: true }] },
+    });
 
     window.discForge.onBurnProgress(data => {
       if (data.status === 'done') setState({ burnDone: true, burnStatus: 'done', burnMessage: data.message, burnPercent: 100 });
       else if (data.status === 'error') setState({ burning: true, burnError: data.message });
       else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
     });
-    const result = await window.discForge.burnISO(state.builtIsoPath);
-    if (result.error) setState({ burning: true, burnError: result.error });
+    const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath });
+    if (result && result.error) setState({ burning: true, burnError: result.error });
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {
     window.discForge.removeAllListeners('burn-progress');
