@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.23.0 — TBD
+## v1.23.0 — 2026-06-07
 
 **Chapter thumbnails + direct BD-R burning**
 
