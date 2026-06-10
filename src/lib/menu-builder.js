@@ -1173,18 +1173,18 @@ function findPtsInsertionPoint(m2tsBuf, targetPts) {
  * of firing End-of-title, which would call blurayReleaseVout and destroy
  * the IG overlay before any video frame is displayed.
  *
- * PlayItem byte layout (BDMV spec §5.3.4):
+ * PlayItem byte layout (BDMV spec §5.3.4, matches libbluray mpls_parse.c):
  *   piOff+0-1  : length of PlayItem data (not counting these 2 bytes)
  *   piOff+2-6  : ClipInformationFileName (5 chars)
  *   piOff+7-10 : Clip_codec_identifier (4 chars)
- *   piOff+11   : reserved(7) + is_multi_angle(1)
- *   piOff+12   : connection_condition(4) + reserved(4)
+ *   piOff+11-12: reserved(11) + is_multi_angle(1) + connection_condition(4)
  *   piOff+13   : ref_to_STC_id
  *   piOff+14-17: IN_time
  *   piOff+18-21: OUT_time
  *   piOff+22-29: UO_mask_table (8 bytes)
- *   piOff+30   : random_access_flag(1) + still_mode(2) + reserved(5)
- *   piOff+31-32: still_time (2 bytes, only meaningful when still_mode==1)
+ *   piOff+30   : random_access_flag(1) + reserved(7)
+ *   piOff+31   : still_mode
+ *   piOff+32-33: still_time (2 bytes, only meaningful when still_mode==0x01)
  */
 function patchMplsForStill(mplsBuf) {
   const plStart      = mplsBuf.readUInt32BE(8);
@@ -1194,14 +1194,19 @@ function patchMplsForStill(mplsBuf) {
   let piOff = plStart + 10;
   for (let i = 0; i < numPlayItems; i++) {
     const piLen = newBuf.readUInt16BE(piOff);
-    // PlayItem byte layout (after UO_mask_table at [22-29]):
-    //   [30]: random_access_flag(1) + reserved(7)
-    //   [31]: still_mode — 0x00=no-still, 0x01=infinite-still, 0x02=timed-still
-    //   [32-33]: still_time (only meaningful when still_mode==0x02)
-    // Ref: Beach Boys 50 Live reference disc — 00001.mpls PlayItem byte[31]=0x01 for IG menu clip.
+    // still_mode value map (BD-ROM Part 3 §5.3.4; libbluray bluray.h):
+    //   0x00 = BLURAY_STILL_NONE      — no still, play through
+    //   0x01 = BLURAY_STILL_TIME      — timed still, hold still_time seconds
+    //   0x02 = BLURAY_STILL_INFINITE  — hold last frame until user action
+    // v1.10.6 wrote 0x01 here ("infinite") from an inverted reading of this map.
+    // 0x01 + still_time=0 is a ZERO-SECOND timed still: hardware (LG BP350) ends
+    // the play item immediately, the MovieObject loop restarts the menu clip
+    // every cycle, and the IG composition never survives long enough to take
+    // input — the "menu loops, no highlight, remote dead" symptom. VLC never
+    // catches this because libbluray delegates still handling to the host app.
     newBuf[piOff + 30] = newBuf[piOff + 30] & 0x80;  // keep only RAF bit, clear reserved bits
-    newBuf[piOff + 31] = 0x01;                        // still_mode = 0x01 (infinite still)
-    newBuf.writeUInt16BE(0x0000, piOff + 32);          // still_time = 0 (N/A for infinite still)
+    newBuf[piOff + 31] = 0x02;                        // still_mode = 0x02 (infinite still)
+    newBuf.writeUInt16BE(0x0000, piOff + 32);          // still_time = 0 (unused for infinite)
     piOff += 2 + piLen;
   }
   return newBuf;

@@ -382,11 +382,15 @@ console.log('\n=== 5a: ICS stream_model byte (Multiplexed vs Non-Multiplexed) ==
   assertEq(icsMux[20], 0x00, 'Multiplexed ICS[20] composition_timeout_pts byte 4 = 0x00');
 }
 
-console.log('\n=== 5b: patchMplsForStill writes still_mode=1 to byte[31] (v1.10.6 fix) ===');
+console.log('\n=== 5b: patchMplsForStill writes still_mode=2 (infinite) to byte[31] ===');
 
 {
-  // patchMplsForStill was writing to bits 5-6 of byte[30] (reserved) instead of
-  // byte[31] (still_mode field), and using still_mode=0x02 (timed) instead of 0x01 (infinite).
+  // v1.10.6 fixed the OFFSET (byte[30] reserved bits → byte[31] still_mode) but
+  // inverted the VALUE map: it wrote 0x01 believing 0x01=infinite. Per BD-ROM
+  // Part 3 §5.3.4 and libbluray bluray.h, 0x01 = BLURAY_STILL_TIME (timed) and
+  // 0x02 = BLURAY_STILL_INFINITE. 0x01 + still_time=0 is a zero-second still:
+  // hardware ends the menu play item immediately and the MovieObject loop
+  // restarts it (~looping menu, no interaction) — confirmed on the LG BP350.
   // Ref: PlayItem spec — byte[30]=random_access_flag+reserved, byte[31]=still_mode.
   const { patchMplsForStill } = require(path.join(__dirname, '..', 'src', 'lib', 'menu-builder.js'));
 
@@ -413,7 +417,7 @@ console.log('\n=== 5b: patchMplsForStill writes still_mode=1 to byte[31] (v1.10.
   const byte31 = patched[PI_OFF + 31];
   const byte32_33 = patched.readUInt16BE(PI_OFF + 32);
 
-  assertEq(byte31, 0x01,   'still_mode byte[31] = 0x01 (infinite still)');
+  assertEq(byte31, 0x02,   'still_mode byte[31] = 0x02 (BLURAY_STILL_INFINITE)');
   assertEq(byte32_33, 0x00, 'still_time bytes[32-33] = 0x0000');
   assert((byte30 & 0x7F) === 0x00, 'byte[30] reserved bits = 0 (only RAF bit kept)');
 }
