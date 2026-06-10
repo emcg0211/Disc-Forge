@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('discForge', {
   extractChapterThumb: (opts) => ipcRenderer.invoke('chapter:extractThumb', opts),
   burnDisc:         (opts)    => ipcRenderer.invoke('disc:burn', opts),
   checkBurner:      ()        => ipcRenderer.invoke('disc:checkBurner'),
+  openInVLC:        (isoPath) => ipcRenderer.invoke('open-in-vlc', isoPath),
   onBurnProgress:   (cb)      => ipcRenderer.on('burn-progress', (_, d) => cb(d)),
   saveProjectFile:  (json)    => ipcRenderer.invoke('save-project-file', json),
   loadProjectFile:  ()        => ipcRenderer.invoke('load-project-file'),

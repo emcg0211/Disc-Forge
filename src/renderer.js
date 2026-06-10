@@ -381,7 +381,7 @@ async function startBuild() {
   state.buildEndTime = null;
   state.stepStartTimes = {};
   state.stepDetails = {};
-  setState({ building:true, buildSteps:steps, buildCurrentStep:0, buildDone:false, buildError:null, builtIsoPath:null, ffmpegLog:'' });
+  setState({ building:true, buildSteps:steps, buildCurrentStep:0, buildDone:false, buildError:null, builtIsoPath:null, ffmpegLog:'', vlcMsg:null });
   // Include enabled embedded tracks alongside manual tracks
   const includedEmbedded = (state.embeddedTracks||[]).filter(t => t.included !== false);
   const embeddedAudio = includedEmbedded.filter(t => t.role==='audio');
@@ -486,9 +486,17 @@ function closeBuildModal() {
   state.buildEndTime = null;
   state.stepStartTimes = {};
   state.stepDetails = {};
-  setState({ building:false, buildDone:false, buildError:null });
+  setState({ building:false, buildDone:false, buildError:null, vlcMsg:null });
 }
 function revealISO() { if (state.builtIsoPath) window.discForge.revealInFinder(state.builtIsoPath); }
+async function previewInVLC() {
+  if (!state.builtIsoPath) return;
+  setState({ vlcMsg: 'Opening in VLC…' });
+  const r = await window.discForge.openInVLC(state.builtIsoPath);
+  // Success: VLC takes the foreground, so clear the transient message.
+  // Failure (e.g. VLC not installed): keep the explanation inline.
+  setState({ vlcMsg: r && r.success ? null : (r && r.error) || 'Could not open VLC.' });
+}
 
 // ── Probe cache ────────────────────────────────────────────────────────────────
 function cacheProbeData(filePath, data) {
@@ -2815,8 +2823,10 @@ function buildModalHTML() {
       '<div class="modal-sub">' + p.audioTracks.length + ' audio · ' + p.subtitleTracks.length + ' subtitles · ' + p.chapters.length + ' chapters · ' + p.extras.length + ' extras</div>' +
       (elapsedStr ? '<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px">Completed in ' + elapsedStr + '</div>' : '') +
       '<div class="iso-path">' + esc(builtIsoPath||'') + '</div>' +
+      (state.vlcMsg ? '<div style="font-size:12px;color:var(--text-tertiary);margin:6px 0 2px">' + esc(state.vlcMsg) + '</div>' : '') +
       '<div class="modal-actions">' +
       '<button class="btn btn-ghost" id="close-modal">Close</button>' +
+      '<button class="btn btn-ghost" id="preview-vlc">▶ Preview in VLC</button>' +
       '<button class="btn btn-primary" id="reveal-iso">Show in Finder</button>' +
       '</div></div></div>';
   }
@@ -3612,6 +3622,7 @@ function attachListeners() {
     setState({ burning: false, burnDone: false, burnError: null, burnStatus: null, burnMessage: '' });
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
+  document.getElementById('preview-vlc')?.addEventListener('click', previewInVLC);
 
   // ── v1.19.0 menu switcher (Main Menu / Chapter Select) above the TV bezel ──
   document.querySelectorAll('.menu-switch-btn').forEach(btn => {

@@ -542,6 +542,22 @@ ipcMain.handle('disc:checkBurner', async () => {
   }
 });
 
+// Preview a built ISO in VLC before burning — a seconds-fast structural check
+// versus a ~30-minute burn. VLC-not-installed gets a dialog with the download
+// pointer; the renderer also shows the error inline next to the button.
+ipcMain.handle('open-in-vlc', async (_, isoPath) => {
+  try {
+    const { openInVlc } = require('./lib/preview');
+    const result = await openInVlc({ isoPath });
+    if (!result.success && /not installed/i.test(result.error || '')) {
+      dialog.showErrorBox('VLC not found', result.error);
+    }
+    return result;
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
   const { burnDisc } = require('./lib/burn');
   sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}`);
