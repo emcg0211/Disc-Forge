@@ -1,0 +1,28 @@
+# Runs the full Disc Forge test suite (tests/*.test.js via scripts/test.js)
+# on every push and pull request.
+#
+# Runner notes:
+# - macos-latest: the suites exercise macOS-specific paths (diskutil/growisofs
+#   seams, BD tooling conventions) and `canvas` installs from prebuilt darwin
+#   binaries via npm ci.
+# - ffmpeg: the repo's bin/ binaries are NOT committed (only README.txt), and
+#   tests/menu-video.test.js resolves ffmpeg/ffprobe from the system
+#   (/opt/homebrew, /usr/local, PATH). It self-skips cleanly when they're
+#   missing, but we install ffmpeg via brew so the 219 menu-video asserts
+#   actually run in CI (approach (a); no env-var skipping needed).
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install ffmpeg (menu-video suite dependency)
+        run: brew install ffmpeg || brew upgrade ffmpeg || true
+      - run: npm ci
+      - run: npm test

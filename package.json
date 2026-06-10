@@ -8,6 +8,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node scripts/test.js",
     "build": "electron-builder --mac --arm64",
     "build-arm": "electron-builder --mac --arm64",
     "build-x64": "electron-builder --mac --x64",
