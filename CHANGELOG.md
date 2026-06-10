@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.24.2 — 2026-06-10
+
+**Two LG BP350 hardware fixes: horizontal button placement + button activation**
+
+- Horizontal (studio-bar) templates: the IG button now sits inside the bottom
+  bar where the preview shows it. The encoder was using the vertical-stack
+  auto-layout for every template, so on a horizontal template the button
+  landed mid-screen while the bar sat at the bottom (the renderer preview was
+  already correct — the disc had drifted from it). Vertical layouts are
+  byte-identical to before (golden hashes unchanged)
+- Button activation is now delegated to MovieObjects, the pattern used by the
+  Toast reference disc — the only IG menu proven interactive on this player.
+  Buttons fire JUMP_OBJECT at a per-title movie object that runs
+  PLAY_PL(title) then JUMP_OBJECT(2), so playback returns to the menu when
+  the title ends. Previously buttons fired PLAY_PL directly from the IG
+  stream — the prime suspect for "button renders but OK does nothing" (with a
+  single self-referential button, a dead OK is the only observable failure;
+  highlight/arrows are unobservable with N=1)
+- IG stream entries in the MPLS STN table and CLPI now carry the mandatory
+  ISO-639 language code 'und' (byte-identical to Toast); they were zeroed
+- BACKUP/MovieObject.bdmv is now synced inside addMenuToDisc, fixing stale
+  backups on the multi-title path
+- Re-measured the actual Toast ICS as ground truth: composition/selection/user
+  timeouts 0/0/0, all-zero UO masks (PlayItem and page), no WDS, empty
+  effects, still_mode=0x02 — our values match on every field, so none of
+  those were touched
+- New invariants in the single-title menu suite: horizontal-in-bar position,
+  vertical position unchanged, JUMP_OBJECT activation bytes, appendMovieObjects
+  structure, 'und' language bytes
+- 1055 tests
+
 ## v1.24.1 — 2026-06-10
 
 **Menus are now actually interactive on hardware players**

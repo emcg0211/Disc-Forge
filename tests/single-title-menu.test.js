@@ -152,6 +152,7 @@ function decodeIcs(seg) {
   const bt = bo + 3;
   out.button = {
     id: b.readUInt16BE(bt),
+    x: b.readUInt16BE(bt + 5), y: b.readUInt16BE(bt + 7),
     up: b.readUInt16BE(bt + 9), down: b.readUInt16BE(bt + 11),
     left: b.readUInt16BE(bt + 13), right: b.readUInt16BE(bt + 15),
     normalStart: b.readUInt16BE(bt + 17),
@@ -285,6 +286,99 @@ console.log('\n=== 3: PMT declares the IG stream with a valid CRC ===');
   assertEq(pkt.readUInt32BE(crcOff), crc32(pkt.slice(ss, crcOff)), 'PMT CRC_32 recomputed correctly');
   const again = mb.patchPmtForIG(patched, 0x1400, 0x91);
   assert(again.equals(patched), 'patchPmtForIG is idempotent (second call is a no-op)');
+}
+
+// ── 4: v1.24.2 — horizontal button position + JUMP_OBJECT activation ─────────
+console.log('\n=== 4: horizontal templates place the IG button inside the bottom bar ===');
+{
+  // gold-bar: barHeight=136 → bar at y=944..1080. Button 175×114 must sit
+  // centered inside it: x=(1920-175)/2≈873, y=944+(136-114)/2=955. Through
+  // v1.24.1 the encoder used the vertical-stack layout for ALL templates, so
+  // the button landed mid-screen (y=483) while the video bar sat at the bottom
+  // (LG BP350 confirmed).
+  const tsStore = require(path.join(__dirname, '..', 'src', 'lib', 'template-store.js'));
+  const goldBar = tsStore.loadById('gold-bar');
+  const igH = mb.buildMenuDisplaySet({ playlists: [0], pts: 54000000, labels: ['Play Movie'], template: goldBar });
+  const segsH = decodeIgSegments(igH);
+  const icsH = decodeIcs(segsH[0]);
+  assertEq(icsH.button.x, 873, 'horizontal N=1: button x = 873 (centered)');
+  assertEq(icsH.button.y, 955, 'horizontal N=1: button y = 955 (inside the 944..1080 bar, NOT mid-screen)');
+  const barY = 1080 - goldBar.button.barHeight;
+  assert(icsH.button.y >= barY && icsH.button.y + goldBar.button.height <= 1080,
+    'horizontal N=1: button rectangle fully inside the video bar');
+
+  // Vertical layout unchanged (classic, N=1): the v1.17 centered stack.
+  const igV = mb.buildMenuDisplaySet({ playlists: [0], pts: 54000000, labels: ['Play Movie'] });
+  const icsV = decodeIcs(decodeIgSegments(igV)[0]);
+  assertEq(icsV.button.x, 560, 'vertical N=1: button x = 560 (unchanged)');
+  assertEq(icsV.button.y, 495, 'vertical N=1: button y = 495 (unchanged)');
+}
+
+console.log('\n=== 5: button activation transfers via JUMP_OBJECT (Toast pattern) ===');
+{
+  // The Toast disc — the only IG menu proven interactive on the LG BP350 —
+  // never issues PLAY_PL from a button: buttons JUMP_OBJECT to a MovieObject
+  // and the object does the playing. Production passes buttonNav for this;
+  // the default stays PLAY_PL so older callers/goldens are byte-identical.
+  const igNav = mb.buildMenuDisplaySet({
+    playlists: [0], pts: 54000000, labels: ['Play Movie'],
+    buttonNav: [{ type: 'JUMP_OBJECT', arg: 3 }],
+  });
+  const ics = decodeIcs(decodeIgSegments(igNav)[0]);
+  assertEq(ics.button.navCmd, '218000000000000300000000', 'buttonNav → JUMP_OBJECT(3) nav command');
+
+  const igDef = mb.buildMenuDisplaySet({ playlists: [0], pts: 54000000, labels: ['Play Movie'] });
+  assertEq(decodeIcs(decodeIgSegments(igDef)[0]).button.navCmd, '228000000000000000000000',
+    'no buttonNav → default PLAY_PL(0) (back-compat, goldens unchanged)');
+}
+
+console.log('\n=== 6: appendMovieObjects — per-button play objects ===');
+{
+  // Synthetic MovieObject.bdmv: header(40) + struct_len(4) + reserved(4) +
+  // num_objs(2) + one 1-command object.
+  const mobj = Buffer.alloc(50 + 16, 0x00);
+  mobj.write('MOBJ0200', 0, 'ascii');
+  mobj.writeUInt32BE(10 + 16, 40);      // struct length
+  mobj.writeUInt16BE(1, 48);            // 1 object
+  mobj.writeUInt16BE(0x8000, 50);       // obj[0] flags
+  mobj.writeUInt16BE(1, 52);            // 1 command
+  mobj.writeUInt32BE(0x21810000, 54);   // JUMP_TITLE(0)
+
+  const mk = (op, arg) => { const c = Buffer.alloc(12); c.writeUInt32BE(op, 0); c.writeUInt32BE(arg, 4); return c; };
+  const { buf, firstObjectId } = mb.appendMovieObjects(mobj, [
+    [mk(0x22800000, 0), mk(0x21800000, 2)],
+    [mk(0x22800000, 5), mk(0x21800000, 2)],
+  ]);
+  assertEq(firstObjectId, 1, 'firstObjectId = previous object count');
+  assertEq(buf.readUInt16BE(48), 3, 'num_objects 1 → 3');
+  assertEq(buf.readUInt32BE(40), 26 + 56, 'struct length grew by 2×(4+24) bytes');
+  // decode appended objects
+  let pos = 50 + 16;
+  assertEq(buf.readUInt16BE(pos), 0x8000, 'appended obj flags = 0x8000 (resume_intention)');
+  assertEq(buf.readUInt16BE(pos + 2), 2, 'appended obj has 2 commands');
+  assertEq(buf.slice(pos + 4, pos + 16).toString('hex'), '228000000000000000000000', 'cmd 1 = PLAY_PL(0)');
+  assertEq(buf.slice(pos + 16, pos + 28).toString('hex'), '218000000000000200000000', 'cmd 2 = JUMP_OBJECT(2) — return to menu');
+  pos += 4 + 24;
+  assertEq(buf.slice(pos + 4, pos + 16).toString('hex'), '228000000000000500000000', 'second object cmd 1 = PLAY_PL(5)');
+  // bad input throws
+  let threw = false;
+  try { mb.appendMovieObjects(mobj, [[Buffer.alloc(11)]]); } catch { threw = true; }
+  assert(threw, 'rejects commands that are not 12-byte Buffers');
+}
+
+console.log('\n=== 7: IG stream entries carry language "und" (Toast-identical) ===');
+{
+  const raw = buildTsMuxerLikeMpls();
+  const patched = mb.patchMplsForStill(mb.patchMplsForIG(mb.patchMplsClipName(raw, '00099')));
+  const plStart = patched.readUInt32BE(8); const pi = plStart + 10; const stn = pi + 34;
+  let so = stn + 16; let sci = null;
+  const total = patched[stn + 4] + patched[stn + 5] + patched[stn + 6] + patched[stn + 7];
+  for (let s = 0; s < total; s++) {
+    const sciLen = patched[so + 10];
+    if (patched.readUInt16BE(so + 2) === 0x1400) sci = patched.slice(so + 10, so + 11 + sciLen).toString('hex');
+    so += 1 + patched[so] + 1 + sciLen;
+  }
+  assertEq(sci, '0591756e6400', 'MPLS STN IG StreamCodingInfo = 05 91 "und" 00 (byte-identical to Toast)');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────

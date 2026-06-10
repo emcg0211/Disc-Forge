@@ -3737,7 +3737,7 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
   // p_sys->p_vout is non-NULL and the overlay is rendered correctly.
   const { patchClpiForIG, patchMplsForIG, patchMplsClipName, patchMplsForStill,
           buildMenuDisplaySet, injectIGIntoM2ts, patchPmtForIG, extractFirstVideoPTS,
-          rewriteVideoPesDts, generateMenuVideo } =
+          rewriteVideoPesDts, generateMenuVideo, appendMovieObjects } =
     require('./lib/menu-builder');
   const templateStore = require('./lib/template-store');
 
@@ -3869,12 +3869,26 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
   // Fire IG immediately when 00099 starts — vout is already initialized from preload.
   sendLog(`[Menu] Video PTS: ${videoPts}`);
 
+  // v1.24.2 — buttons transfer control via JUMP_OBJECT, never PLAY_PL directly.
+  // The Toast reference disc (the only IG menu proven interactive on the LG
+  // BP350) drives every button as SET…+JUMP_OBJECT and lets a MovieObject do
+  // the playing; our direct PLAY_PL(n) from the button was the prime suspect
+  // for "button renders but OK does nothing" on the same player. Step 8 appends
+  // one movie object per button — [PLAY_PL(playlist), JUMP_OBJECT(2)] — so the
+  // ids are known now: they start at the current object count. (PLAY_PL is
+  // proven on this player from MovieObject context: the boot chain uses it.)
+  const mobjPath = path.join(bdFolder, 'BDMV', 'MovieObject.bdmv');
+  const buttonObjFirstId = fs.readFileSync(mobjPath).readUInt16BE(48);
+  const buttonNav = playlists.map((_, i) => ({ type: 'JUMP_OBJECT', arg: buttonObjFirstId + i }));
+  sendLog(`[Menu] Button nav: JUMP_OBJECT(${playlists.map((_, i) => buttonObjFirstId + i).join(',')}) → per-title movie objects`);
+
   const igTs     = buildMenuDisplaySet({
     playlists,
     pts:        videoPts,
     labels:     menuLabels,
     ffmpegPath: TOOLS.ffmpeg,
     template:   menuTemplate,
+    buttonNav,
   });
   const injectedM2ts = injectIGIntoM2ts(videoM2ts, igTs);
   sendLog(`[Menu] IG injected: ${igTs.length} bytes TS → m2ts now ${injectedM2ts.length} bytes`);
@@ -3900,8 +3914,40 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
   fs.writeFileSync(path.join(destPlaylist, '00099.mpls'), igMpls);
   sendLog('[Menu] Installed menu 00099.m2ts / 00099.clpi / 00099.mpls');
 
-  // ── Step 8: Patch MovieObject obj[2] → PLAY_PL(98) → PLAY_PL(99) → JUMP_OBJECT(2)
-  const mobjPath = path.join(bdFolder, 'BDMV', 'MovieObject.bdmv');
+  // ── Step 8: MovieObject — append per-button play objects, patch obj[2] booter
+  //
+  // 8a (v1.24.2): one movie object per button, [PLAY_PL(playlist), JUMP_OBJECT(2)].
+  // The IG buttons JUMP_OBJECT here (ids computed in Step 6); after the title
+  // finishes, JUMP_OBJECT(2) returns to the menu booter. Appended BEFORE the
+  // obj[2] splice so the button targets exist even if the splice is skipped.
+  const rawMobjBuf = Buffer.from(fs.readFileSync(mobjPath));
+  const PLAY_PL_OP = 0x22800000, JUMP_OBJECT_OP = 0x21800000;
+  const mkCmd = (op, arg) => {
+    const c = Buffer.alloc(12);
+    c.writeUInt32BE(op, 0); c.writeUInt32BE(arg, 4);
+    return c;
+  };
+  const { buf: mobjWithBtnObjs, firstObjectId } = appendMovieObjects(
+    rawMobjBuf,
+    playlists.map(pl => [mkCmd(PLAY_PL_OP, pl), mkCmd(JUMP_OBJECT_OP, 2)]),
+  );
+  if (firstObjectId !== buttonObjFirstId) {
+    throw new Error(`[Menu] movie-object id drift: buttons target obj[${buttonObjFirstId}…] but append landed at obj[${firstObjectId}…]`);
+  }
+  fs.writeFileSync(mobjPath, mobjWithBtnObjs);
+  sendLog(`[Menu] Appended ${playlists.length} button movie object(s) at obj[${firstObjectId}…]: PLAY_PL → JUMP_OBJECT(2)`);
+  // Keep BACKUP/MovieObject.bdmv in sync (players may read either copy). Called
+  // again after the obj[2] splice below; here it also covers the early-return
+  // warning paths so BACKUP never lags the primary.
+  const syncMobjBackup = () => {
+    try {
+      const backMobj = path.join(bdFolder, 'BDMV', 'BACKUP', 'MovieObject.bdmv');
+      if (fs.existsSync(path.dirname(backMobj))) fs.copyFileSync(mobjPath, backMobj);
+    } catch (_) {}
+  };
+  syncMobjBackup();
+
+  // 8b: obj[2] booter splice → PLAY_PL(98) → PLAY_PL(99) → JUMP_OBJECT(2)
   const mobjBuf  = Buffer.from(fs.readFileSync(mobjPath));
 
   const MOBJ_STRUCT_OFF = 40;
@@ -3957,6 +4003,7 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
   newMobjBuf.writeUInt32BE(mobjBuf.readUInt32BE(MOBJ_STRUCT_OFF) + 24, MOBJ_STRUCT_OFF);
 
   fs.writeFileSync(mobjPath, newMobjBuf);
+  syncMobjBackup();
   sendLog(`[Menu] MovieObject obj[2]: PLAY_PL(98)→PLAY_PL(99)→JUMP_OBJECT(2) (${numCmds2}→${numCmds2+2} cmds)`);
 }
 

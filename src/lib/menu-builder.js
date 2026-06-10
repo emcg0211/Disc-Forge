@@ -472,9 +472,18 @@ function renderButtonPixels(w, h, state, style = DEFAULT_STYLE) {
  * @param {string[]} opts.labels       - button label text array
  * @param {string}   opts.ffmpegPath   - accepted for API compatibility; unused (text is rendered in-process via canvas)
  * @param {object}   opts.template     - menu template (look/geometry/palette); defaults to Classic
+ * @param {Array<{type:string,arg:number}>} [opts.buttonNav] - per-button activation
+ *   command override (buildNavCmd type/arg). Default: PLAY_PL(playlists[i]).
+ *   v1.24.2: production passes JUMP_OBJECT(movieObjectId) here — the Toast
+ *   reference disc (the only menu proven interactive on the LG BP350) never
+ *   issues PLAY_PL from a button; every button transfers control to a
+ *   MovieObject (SET…+JUMP_OBJECT) and the object does the playing. Direct
+ *   PLAY_PL from the IG button was the prime suspect for "OK does nothing"
+ *   on the LG. The default stays PLAY_PL so existing callers/goldens are
+ *   byte-identical.
  * @returns {Buffer} TS-packetized IG PES stream (188-byte packets)
  */
-function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null, template = null } = {}) {
+function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists = null, pl1 = 0, pl2 = 1, pts = 0, labels = [], ffmpegPath = null, template = null, buttonNav = null } = {}) {
   const playlistIds = playlists || [pl1, pl2];
   const N = playlistIds.length;
 
@@ -489,7 +498,18 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
   // v1.18.0 layout editor's output) — each non-null {x,y} overrides the auto
   // layout for that button index; absent/null entries fall back to the auto
   // layout. With no positions at all this is byte-identical to v1.17.
-  const autoPos = computeAutoPositions(N, btnW, btnH, btnGap, videoWidth, videoHeight);
+  //
+  // v1.24.2: horizontal (studio-bar) templates must use the OBJECT form of
+  // computeAutoPositions, which centers the buttons inside the bottom bar —
+  // the same math the renderer preview uses (_autoPositions object form).
+  // Through v1.24.1 this always called the legacy positional form (vertical
+  // centered stack), so on a horizontal template the IG button landed mid-
+  // screen while the bar sat at the bottom of the video (LG BP350 confirmed).
+  // The legacy form is kept verbatim for vertical layouts (byte-identical).
+  const isHorizontal = !!(tpl.button && tpl.button.layout === 'horizontal');
+  const autoPos = isHorizontal
+    ? computeAutoPositions(tpl, N)
+    : computeAutoPositions(N, btnW, btnH, btnGap, videoWidth, videoHeight);
   const stored  = (tpl.button && Array.isArray(tpl.button.positions)) ? tpl.button.positions : null;
   const positions = autoPos.map((a, i) => {
     const p = (stored && stored[i] && stored[i].x != null) ? stored[i] : a;
@@ -539,7 +559,11 @@ function buildMenuDisplaySet({ videoWidth = 1920, videoHeight = 1080, playlists 
         selStartObjId:      selObjId,  selEndObjId: selObjId,  selRepeat: false,
         activatedSoundId:   0xFF,
         actStartObjId:      selObjId,  actEndObjId: selObjId,
-        navCmds: [buildNavCmd('PLAY_PL', playlistIds[i])],
+        navCmds: [
+          (buttonNav && buttonNav[i])
+            ? buildNavCmd(buttonNav[i].type, buttonNav[i].arg)
+            : buildNavCmd('PLAY_PL', playlistIds[i]),
+        ],
       }],
     });
   }
@@ -1009,12 +1033,16 @@ function patchClpiForIG(clpiBuf) {
   }
   const appendAt = streamOff;
 
-  // 24-byte IG stream entry: PID(2)=0x1200 + length(1)=21 + coding_type(1)=0x91 + 20 zero bytes
+  // 24-byte IG stream entry: PID(2) + length(1)=21 + StreamCodingInfo(21)
+  // For IG (coding_type 0x91) the StreamCodingInfo payload is the 3-byte
+  // ISO-639 language code (libbluray clpi_parse.c). v1.24.2: write 'und' to
+  // match the Toast LG BP350 reference disc; it was previously zeroed.
   const igEntry = Buffer.alloc(24);
   igEntry.writeUInt16BE(IG_PID, 0);
   igEntry[2] = 0x15;   // StreamCodingInfo length = 21
   igEntry[3] = 0x91;   // coding_type = Interactive Graphics
-  // bytes 4–23 remain zero
+  igEntry.write('und', 4, 'ascii');  // language code
+  // remaining bytes stay zero
 
   const newBuf = Buffer.concat([clpiBuf.slice(0, appendAt), igEntry, clpiBuf.slice(appendAt)]);
 
@@ -1063,10 +1091,13 @@ function patchMplsForIG(mplsBuf) {
 
   // Build the 16-byte IG stream entry:
   //   StreamEntry(10): 09 01 PID_HI PID_LO 00*6
-  //   StreamCodingInfo(6): 05 91 00 00 00 00
+  //   StreamCodingInfo(6): 05 91 'u' 'n' 'd' 00
+  // v1.24.2: the 3 bytes after coding_type are the ISO-639 language code.
+  // Toast's working LG BP350 disc writes 'und' there (91 75 6e 64); ours were
+  // zeroed, which is out of spec (a language code is mandatory for IG entries).
   const igEntry = Buffer.from([
     0x09, 0x01, (IG_PID >> 8) & 0xFF, IG_PID & 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x05, 0x91, 0x00, 0x00, 0x00, 0x00,
+    0x05, 0x91, 0x75, 0x6e, 0x64, 0x00,
   ]);
 
   let newBuf      = Buffer.from(mplsBuf);
@@ -1210,6 +1241,43 @@ function patchMplsForStill(mplsBuf) {
     piOff += 2 + piLen;
   }
   return newBuf;
+}
+
+/**
+ * Append movie objects to a MovieObject.bdmv buffer.
+ *
+ * v1.24.2 — button activation is delegated to MovieObjects (the Toast pattern,
+ * the only menu interaction proven on the LG BP350): each IG button fires
+ * JUMP_OBJECT(id) at one of these appended objects, and the object plays the
+ * title then jumps back to the menu booter. Buttons never PLAY_PL directly.
+ *
+ * MovieObject.bdmv layout (libbluray mobj_parse.c):
+ *   [40]   extension/struct length (4) — bytes following this field
+ *   [48]   number_of_movie_objects (2)
+ *   [50..] objects: flags(2) num_cmds(2) cmds(num_cmds × 12)
+ *
+ * @param {Buffer} mobjBuf - MovieObject.bdmv contents
+ * @param {Array<Buffer[]>} objectsCmds - one entry per new object: its 12-byte commands
+ * @returns {{ buf: Buffer, firstObjectId: number }} patched buffer + id of the first appended object
+ */
+function appendMovieObjects(mobjBuf, objectsCmds) {
+  const MOBJ_STRUCT_OFF = 40, NUM_OBJS_OFF = 48;
+  const numObjs = mobjBuf.readUInt16BE(NUM_OBJS_OFF);
+  const newObjBufs = objectsCmds.map((cmds) => {
+    for (const c of cmds) {
+      if (!Buffer.isBuffer(c) || c.length !== 12) throw new Error('appendMovieObjects: each command must be a 12-byte Buffer');
+    }
+    const obj = Buffer.alloc(4 + cmds.length * 12);
+    obj.writeUInt16BE(0x8000, 0);            // resume_intention_flag=1 (matches tsMuxeR's objects)
+    obj.writeUInt16BE(cmds.length, 2);
+    cmds.forEach((c, i) => c.copy(obj, 4 + i * 12));
+    return obj;
+  });
+  const added = newObjBufs.reduce((s, b) => s + b.length, 0);
+  const buf = Buffer.concat([mobjBuf, ...newObjBufs]);
+  buf.writeUInt32BE(mobjBuf.readUInt32BE(MOBJ_STRUCT_OFF) + added, MOBJ_STRUCT_OFF);
+  buf.writeUInt16BE(numObjs + objectsCmds.length, NUM_OBJS_OFF);
+  return { buf, firstObjectId: numObjs };
 }
 
 /**
@@ -1888,6 +1956,7 @@ module.exports = {
   patchMplsForIG,
   patchMplsClipName,
   patchMplsForStill,
+  appendMovieObjects,
   findPtsInsertionPoint,
   IG_PID,
   BTN_W, BTN_H, BTN_GAP, BORDER,
