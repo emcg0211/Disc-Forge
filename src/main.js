@@ -574,8 +574,15 @@ ipcMain.handle('save-project-file', async (_, json) => {
     filters: [{ name: 'Disc Forge Project', extensions: ['dfp'] }],
   });
   if (r.canceled || !r.filePath) return null;
-  fs.writeFileSync(r.filePath, json, 'utf8');
-  return r.filePath;
+  // A write failure (read-only target, disk full) used to reject the invoke;
+  // the renderer's bare await swallowed it and the user got no feedback at all.
+  try {
+    fs.writeFileSync(r.filePath, json, 'utf8');
+    return r.filePath;
+  } catch (e) {
+    dialog.showErrorBox('Save failed', `Could not save the project:\n${e.message}`);
+    return null;
+  }
 });
 
 ipcMain.handle('load-project-file', async () => {
@@ -585,7 +592,12 @@ ipcMain.handle('load-project-file', async () => {
     properties: ['openFile'],
   });
   if (r.canceled || !r.filePaths.length) return null;
-  return fs.readFileSync(r.filePaths[0], 'utf8');
+  try {
+    return fs.readFileSync(r.filePaths[0], 'utf8');
+  } catch (e) {
+    dialog.showErrorBox('Open failed', `Could not read the project file:\n${e.message}`);
+    return null;
+  }
 });
 
 ipcMain.handle('open-folder-dialog', async () => {
