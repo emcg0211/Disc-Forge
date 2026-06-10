@@ -2416,33 +2416,7 @@ function pageProject(p) {
           </label>` : ''}
           ${p.useIGMenu ? `
           <div style="background:var(--bg-secondary);padding:10px 12px;border-radius:8px;margin-top:8px;display:flex;flex-direction:column;gap:8px">
-            <div style="display:flex;gap:10px;align-items:center">
-              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Title</label>
-              <input type="text" id="ig-menu-title" value="${esc(p.igMenuConfig?.title||'')}" placeholder="Menu title (optional)" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
-            </div>
-            <div style="display:flex;gap:10px;align-items:center">
-              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Template</label>
-              <select id="ig-template" style="flex:1;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary)">
-                ${templateOptionsHTML(p.igMenuConfig?.templateId || 'classic')}
-              </select>
-              <button class="btn btn-ghost btn-xs" id="ig-edit-templates" title="Open the template editor">Edit…</button>
-            </div>
-            <div style="font-size:11px;color:var(--text-tertiary);margin:-2px 0 2px 62px">The template controls the menu palette, button geometry, font, and background.</div>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Background</label>
-              <input type="color" id="ig-bg-color" value="${p.igMenuConfig?.bgColor||'#1a1a2e'}" style="width:36px;height:24px;cursor:pointer;border:none;border-radius:4px;padding:1px;background:none">
-              <button class="btn btn-ghost btn-xs" id="ig-pick-bg-image">${p.igMenuConfig?.bgImagePath ? esc(p.igMenuConfig.bgImagePath.split('/').pop()) : 'Pick BG image'}</button>
-              ${p.igMenuConfig?.bgImagePath ? '<button class="btn btn-ghost btn-xs" id="ig-clear-bg-image">&#x2715;</button>' : ''}
-            </div>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <label style="font-size:12px;color:var(--text-secondary);min-width:52px">Buttons</label>
-              <span style="font-size:11px;color:var(--text-tertiary)">BG</span>
-              <input type="color" id="ig-btn-bg" value="${p.igMenuConfig?.buttonBgColor||'#2a2a4a'}" style="width:30px;height:22px;cursor:pointer;border:none;border-radius:3px;padding:1px;background:none">
-              <span style="font-size:11px;color:var(--text-tertiary)">Text</span>
-              <input type="color" id="ig-btn-text" value="${p.igMenuConfig?.buttonTextColor||'#ffffff'}" style="width:30px;height:22px;cursor:pointer;border:none;border-radius:3px;padding:1px;background:none">
-              <span style="font-size:11px;color:var(--text-tertiary)">Selected</span>
-              <input type="color" id="ig-btn-hl" value="${p.igMenuConfig?.buttonHighlightColor||'#ff8800'}" style="width:30px;height:22px;cursor:pointer;border:none;border-radius:3px;padding:1px;background:none">
-            </div>
+            <div style="font-size:11px;color:var(--text-tertiary)">Menu appearance — template, background, and button colors — is designed in the <b>Menus</b> tab. Set per-episode button labels below.</div>
             <div style="display:flex;flex-direction:column;gap:4px">
               <label style="font-size:12px;color:var(--text-secondary);margin-bottom:2px">Button Labels</label>
               ${(() => {
@@ -3128,16 +3102,9 @@ function attachListeners() {
     setPrj({ chapterMenu: { ...state.project.chapterMenu, templateId: e.target.value || null } }));
   document.getElementById('use-splash')?.addEventListener('change',  e => setPrj({ useSplash: e.target.checked }));
   document.getElementById('use-ig-menu')?.addEventListener('change', e => setPrj({ useIGMenu: e.target.checked }));
-  document.getElementById('ig-menu-title')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, title: e.target.value } }));
-  document.getElementById('ig-bg-color')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, bgColor: e.target.value } }));
-  document.getElementById('ig-pick-bg-image')?.addEventListener('click', async () => {
-    const r = await pickFile([{ name: 'Image', extensions: ['png', 'jpg', 'jpeg'] }]);
-    if (r) setPrj({ igMenuConfig: { ...state.project.igMenuConfig, bgImagePath: r } });
-  });
-  document.getElementById('ig-clear-bg-image')?.addEventListener('click', () => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, bgImagePath: null } }));
-  document.getElementById('ig-btn-bg')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonBgColor: e.target.value } }));
-  document.getElementById('ig-btn-text')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonTextColor: e.target.value } }));
-  document.getElementById('ig-btn-hl')?.addEventListener('input', e => setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonHighlightColor: e.target.value } }));
+  // Per-episode menu button labels. Menu appearance (template, background, button
+  // colors) is set in the Menus tab — those controls were removed from this tab to
+  // avoid duplicating the Menu Designer.
   document.querySelectorAll('.ig-label-input').forEach(el => {
     el.addEventListener('input', e => {
       const idx = parseInt(e.target.dataset.idx, 10);
@@ -3146,11 +3113,6 @@ function attachListeners() {
       setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonLabels: labels } });
     });
   });
-  // Menu template dropdown (build flow) → igMenuConfig.templateId
-  document.getElementById('ig-template')?.addEventListener('change', e =>
-    setPrj({ igMenuConfig: { ...state.project.igMenuConfig, templateId: e.target.value } }));
-  document.getElementById('ig-edit-templates')?.addEventListener('click', () =>
-    setState({ tab: 'templates' }));
 
   // ── Menus tab (v1.22.0 design-first selector) ───────────────────────────────
   // Step 1 — Design type toggle (Vertical Stack / Horizontal Bar)
