@@ -386,6 +386,9 @@ async function startBuild() {
   const mainHasCrf = p.mainVideo?.videoQuality && p.mainVideo.videoQuality !== 'passthrough';
   const buildProject = {
     ...p,
+    // menusEnabled lives on state (not project p); forward it so single-title
+    // buildDisc can author an interactive menu (it gates on menusEnabled+useIGMenu).
+    menusEnabled: state.menusEnabled || false,
     passThroughMode: mainCompat?.compatible === true && !p.forceTranscode && !mainHasCrf,
     forceTranscode: p.forceTranscode || false,
     audioTracks: [

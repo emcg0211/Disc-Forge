@@ -858,6 +858,28 @@ ipcMain.handle('build-disc', async (_, project) => {
         return addSplashToDisc(bdFolder, splashPng, workDir, splashDuration);
       },
     }] : []),
+    ...(project.menusEnabled && project.useIGMenu ? [{
+      label: 'Authoring interactive menu',
+      fn: async () => {
+        // Single-title menu: one "Play Movie" button → PLAY_PL(0) (the feature).
+        // Prep rewires obj[2] + index.bdmv so FirstPlay/TopMenu boot the menu, then
+        // addMenuToDisc installs the preload(98)+menu(99) clips and the IG buttons.
+        if (!setupSingleTitleMenuNav(bdFolder)) {
+          sendLog('[Menu] nav prep failed — building without menu (boots straight to movie)');
+          return;
+        }
+        await addMenuToDisc(bdFolder, 1, workDir, project.igMenuConfig || {}, {
+          playlistIds:  [0],
+          defaultLabel: 'Play Movie',
+        });
+        // addMenuToDisc rewrites obj[2] in the primary MovieObject.bdmv only — refresh
+        // the BACKUP copy so primary and backup navigation stay consistent.
+        const backMobj = path.join(bdFolder, 'BDMV', 'BACKUP', 'MovieObject.bdmv');
+        if (fs.existsSync(path.dirname(backMobj))) {
+          try { fs.copyFileSync(path.join(bdFolder, 'BDMV', 'MovieObject.bdmv'), backMobj); } catch (_) {}
+        }
+      },
+    }] : []),
     { label: 'Packaging ISO image', fn: async () => {
       const _path = require('path'), _fs = require('fs');
       const bdmvContents = _fs.readdirSync(_path.join(bdFolder,'BDMV')).join(', ');
@@ -3877,6 +3899,86 @@ ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
   }
 });
 
+// ── setupSingleTitleMenuNav ───────────────────────────────────────────────────
+// Single-title prep so addMenuToDisc can wire a menu onto a one-movie disc.
+// tsMuxeR's single-title output has FirstPlay→obj[2], TopMenu→obj[1], Title[0]→obj[0],
+// and obj[2]'s last command is JUMP_TITLE(0) (0x21810000) — i.e. boot straight to the
+// movie, no menu. This mirrors the multi-title fixMultiTitleNavigationForEpisodes prep:
+//   1. obj[2] last cmd JUMP_TITLE(0) → PLAY_PL(0)   (movie = 00000.mpls = playlist 0;
+//      addMenuToDisc requires PLAY_PL here so it can splice 98→99→loop in front).
+//   2. index.bdmv FirstPlay + TopMenu + Title[0] → obj[2] (the soon-to-be menu booter).
+// Returns true on success; false (with a log) if the structure isn't as expected.
+function setupSingleTitleMenuNav(bdFolder) {
+  const mobjPath  = path.join(bdFolder, 'BDMV', 'MovieObject.bdmv');
+  const indexPath = path.join(bdFolder, 'BDMV', 'index.bdmv');
+  const backDir   = path.join(bdFolder, 'BDMV', 'BACKUP');
+
+  if (!fs.existsSync(mobjPath) || !fs.existsSync(indexPath)) {
+    sendLog('[Menu] setupSingleTitleMenuNav: navigation files not found — skipping');
+    return false;
+  }
+
+  // ── 1. MovieObject.bdmv: obj[2] last cmd JUMP_TITLE(0) → PLAY_PL(0) ──
+  const mobjBuf = Buffer.from(fs.readFileSync(mobjPath));
+  const MOBJ_STRUCT_OFF = 40, NUM_OBJS_OFF = 48;
+  const numObjs = mobjBuf.readUInt16BE(NUM_OBJS_OFF);
+  let pos = NUM_OBJS_OFF + 2, obj2Pos = -1, obj2Cmds = 0;
+  for (let i = 0; i < numObjs; i++) {
+    const numCmds = mobjBuf.readUInt16BE(pos + 2);
+    if (i === 2) { obj2Pos = pos; obj2Cmds = numCmds; }
+    pos += 4 + numCmds * 12;
+  }
+  if (obj2Pos === -1) {
+    sendLog(`[Menu] setupSingleTitleMenuNav: expected ≥3 movie objects, found ${numObjs} — skipping`);
+    return false;
+  }
+  const lastCmdOff = obj2Pos + 4 + (obj2Cmds - 1) * 12;
+  const w0 = mobjBuf.readUInt32BE(lastCmdOff);
+  const w1 = mobjBuf.readUInt32BE(lastCmdOff + 4);
+  if (w0 !== 0x21810000 || w1 !== 0) {
+    sendLog(`[Menu] setupSingleTitleMenuNav: obj[2] last cmd unexpected (w0=0x${w0.toString(16)} w1=${w1}) — skipping`);
+    return false;
+  }
+  mobjBuf.writeUInt32BE(0x22800000, lastCmdOff);      // PLAY_PL opcode
+  mobjBuf.writeUInt32BE(0,          lastCmdOff + 4);   // playlist 0 (00000.mpls = movie)
+  mobjBuf.writeUInt32BE(0,          lastCmdOff + 8);
+  fs.writeFileSync(mobjPath, mobjBuf);
+  sendLog('[Menu] setupSingleTitleMenuNav: obj[2] JUMP_TITLE(0)→PLAY_PL(0)');
+
+  // ── 2. index.bdmv: FirstPlay + TopMenu + Title[0] → obj[2] ──
+  // 12-byte HDMV entry layout (libbluray index_parse.c): byte0 object_type=HDMV,
+  // byte4 top 2 bits = playback_type (1=interactive, 0=movie), id_ref at offset 6.
+  const idxBuf   = Buffer.from(fs.readFileSync(indexPath));
+  const idxStart = idxBuf.readUInt32BE(8);
+  const ENTRY_SIZE = 12;
+  const buildHdmvEntry = (idRef, playbackType) => {
+    const e = Buffer.alloc(ENTRY_SIZE);
+    e[0] = 0x40;
+    e[4] = (playbackType & 0x03) << 6;
+    e.writeUInt16BE(idRef, 6);
+    return e;
+  };
+  const newDataLen = 26 + ENTRY_SIZE; // FirstPlay(12)+TopMenu(12)+num_titles(2)+1 Title(12)
+  const newIndexes = Buffer.alloc(4 + newDataLen);
+  newIndexes.writeUInt32BE(newDataLen, 0);
+  buildHdmvEntry(2, 1).copy(newIndexes, 4);                        // FirstPlay → obj[2]
+  buildHdmvEntry(2, 1).copy(newIndexes, 4 + ENTRY_SIZE);          // TopMenu   → obj[2]
+  newIndexes.writeUInt16BE(1, 4 + 2 * ENTRY_SIZE);               // NumberOfTitles = 1
+  buildHdmvEntry(2, 0).copy(newIndexes, 4 + 2 * ENTRY_SIZE + 2);  // Title[0]  → obj[2]
+  const newIdxBuf = Buffer.concat([idxBuf.slice(0, idxStart), newIndexes]);
+  fs.writeFileSync(indexPath, newIdxBuf);
+  sendLog(`[Menu] setupSingleTitleMenuNav: index.bdmv FirstPlay+TopMenu+Title[0]→obj[2] (${idxBuf.length}→${newIdxBuf.length} bytes)`);
+
+  // ── 3. BACKUP copies ──
+  if (fs.existsSync(backDir)) {
+    try {
+      fs.copyFileSync(mobjPath,  path.join(backDir, 'MovieObject.bdmv'));
+      fs.copyFileSync(indexPath, path.join(backDir, 'index.bdmv'));
+    } catch (_) {}
+  }
+  return true;
+}
+
 // ── addMenuToDisc ─────────────────────────────────────────────────────────────
 // Creates a 2-button IG interactive menu at playlist slot 99 (00099.mpls/.clpi/.m2ts).
 // Patches MovieObject obj[2] to boot to the menu (PLAY_PL(99)) instead of EP1 directly.
@@ -3890,7 +3992,10 @@ ipcMain.handle('template-preview-menu', async (_, { id, template } = {}) => {
 //   Button 1 → PLAY_PL(1)  [Episode 1]
 //   Button 2 → PLAY_PL(2)  [Episode 2, or EP1 again for single-title]
 
-async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}) {
+// opts.playlistIds  - explicit playlist id per button (default [1..numEpisodes]);
+//                     single-title builds pass [0] (the movie is 00000.mpls = PLAY_PL(0)).
+// opts.defaultLabel - fallback button label (default 'Play Episode N').
+async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, opts = {}) {
   // Two-clip preload strategy (v1.10.3):
   //   00098.mpls → 1s preload clip (no IG)  — initializes VLC vout before menu fires
   //   00099.mpls → 5s menu clip  (with IG)  — GC fires with vout ready → buttons visible
@@ -4014,10 +4119,12 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}) 
 
   // ── Step 6: Build IG display set and inject into menu m2ts ───────────────
   const configLabels = igMenuConfig.buttonLabels || [];
-  const menuLabels = Array.from({ length: numEpisodes }, (_, i) =>
-    (configLabels[i] && configLabels[i].trim()) ? configLabels[i].trim() : `Play Episode ${i + 1}`
+  const playlists = opts.playlistIds || Array.from({ length: numEpisodes }, (_, i) => i + 1);
+  const numButtons = playlists.length;
+  const menuLabels = Array.from({ length: numButtons }, (_, i) =>
+    (configLabels[i] && configLabels[i].trim()) ? configLabels[i].trim()
+      : (opts.defaultLabel || `Play Episode ${i + 1}`)
   );
-  const playlists = Array.from({ length: numEpisodes }, (_, i) => i + 1);
 
   const rawVideoM2ts = fs.readFileSync(menuPaths.m2ts);
 
