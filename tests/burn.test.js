@@ -106,19 +106,49 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
         return proc;
       };
     }
+    // Hermetic stand-in for the pre-burn `diskutil unmountDisk` so tests never
+    // touch real disks. okUnmount = something was mounted and unmounted;
+    // failUnmount = blank/erased disc (nothing mounted → diskutil errors).
+    const okUnmount   = (d, cb) => setImmediate(() => cb(null, `Unmount of all volumes on ${d} was successful`));
+    const failUnmount = (d, cb) => setImmediate(() => cb(new Error('Unmount failed'), `Unmount of ${d} failed: at least one volume could not be unmounted`));
 
     const logged = [];
-    const okRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, ['Executing growisofs', 'writing to /dev/disk9']), onLog: l => logged.push(l) });
+    const okRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, ['Executing growisofs', 'writing to /dev/disk9']), unmountFn: okUnmount, onLog: l => logged.push(l) });
     assertEq(okRes.success, true, 'exit 0 → success:true');
     assert(logged.includes('writing to /dev/disk9'), 'streams output lines to onLog');
 
-    const failRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(1, [':-( unable to open /dev/disk9: device busy']) });
+    const failRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(1, [':-( unable to open /dev/disk9: device busy']), unmountFn: okUnmount });
     assertEq(failRes.success, false, 'non-zero exit → success:false');
     assert(/device busy/i.test(failRes.error), 'failure surfaces the growisofs error');
 
-    const spawnErr = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, [], new Error('spawn ENOENT')) });
+    const spawnErr = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, [], new Error('spawn ENOENT')), unmountFn: okUnmount });
     assertEq(spawnErr.success, false, 'spawn error → success:false');
     assert(/ENOENT/.test(spawnErr.error), 'spawn error surfaced in result');
+
+    // ── 3b: pre-burn unmount is BEST-EFFORT ──────────────────────────────────────
+    // A blank/erased disc has nothing mounted, so `diskutil unmountDisk` fails
+    // (growisofs's own internal attempt printed ":-( unable to umount: Block
+    // device required" and ABORTED). The unmount failure must be logged and the
+    // burn must proceed regardless.
+    const blankLog = [];
+    const blankRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, ['writing to /dev/disk9']), unmountFn: failUnmount, onLog: l => blankLog.push(l) });
+    assertEq(blankRes.success, true, 'unmount failure on blank disc → burn still proceeds and succeeds');
+    assert(blankLog.some(l => /unmount .* failed .*continuing/i.test(l)), 'unmount failure is logged as non-fatal ("continuing")');
+    assert(blankLog.includes('writing to /dev/disk9'), 'growisofs still ran after the failed unmount');
+
+    const okLog = [];
+    await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, []), unmountFn: okUnmount, onLog: l => okLog.push(l) });
+    assert(okLog.some(l => /unmount of all volumes/i.test(l)), 'successful unmount is logged');
+
+    // The unmount must come BEFORE growisofs (order matters: growisofs aborts on
+    // a mounted volume).
+    const order = [];
+    await burnDisc({
+      isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin,
+      unmountFn: (d, cb) => { order.push('unmount'); setImmediate(() => cb(null, '')); },
+      spawnFn: (...a) => { order.push('growisofs'); return fakeSpawn(0)(...a); },
+    });
+    assertEq(order.join(','), 'unmount,growisofs', 'unmount runs before growisofs');
 
     // growisofs binary missing → clear install hint, never throws.
     const noBin = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: path.join(tmpDir, 'nope') });

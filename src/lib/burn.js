@@ -9,6 +9,13 @@
  * (no Electron dependency) makes it unit-testable.
  *
  * Safety contract (matches the app's hard constraints):
+ *   - Before burning, the target disc is unmounted via `diskutil unmountDisk`
+ *     (BEST-EFFORT: a blank/erased disc has nothing mounted and diskutil fails —
+ *     that is logged and ignored, never fatal). macOS auto-mounts any disc with
+ *     a readable filesystem (e.g. a previously burned BD-RE), and growisofs
+ *     refuses to write to a mounted volume — its own internal unmount attempt
+ *     fails on macOS (":-( unable to umount: Block device required") and aborts
+ *     the burn.
  *   - growisofs is invoked as `growisofs -dvd-compat -Z <deviceNode>=<iso>` and
  *     NOTHING else — no eject, no post-burn verify. The user stays in control of
  *     the disc.
@@ -20,6 +27,7 @@ const { spawn, execFile } = require('child_process');
 
 const SYSTEM_PROFILER = '/usr/sbin/system_profiler';
 const DRUTIL = '/usr/bin/drutil';
+const DISKUTIL = '/usr/sbin/diskutil';
 const GROWISOFS = '/opt/homebrew/bin/growisofs';
 
 /**
@@ -103,9 +111,12 @@ function checkBurner({ exec, execDrutil } = {}) {
  * @param {string}   [opts.growisofsPath]- growisofs binary (default /opt/homebrew/bin/growisofs)
  * @param {function} [opts.onLog]        - called with each trimmed output line
  * @param {function} [opts.spawnFn]      - test seam for child_process.spawn
+ * @param {function} [opts.unmountFn]    - test seam: unmountFn(deviceNode, cb) → cb(err, output)
+ *                                          for the pre-burn `diskutil unmountDisk`. Defaults to
+ *                                          the real call.
  * @returns {Promise<{success:boolean, error?:string}>}
  */
-function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, spawnFn } = {}) {
+function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, spawnFn, unmountFn } = {}) {
   return new Promise((resolve) => {
     if (!isoPath || !fs.existsSync(isoPath)) {
       return resolve({ success: false, error: `ISO file not found: ${isoPath || '(none)'}` });
@@ -117,35 +128,65 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
       return resolve({ success: false, error: 'No burner device node found. Connect a Blu-ray burner and try again.' });
     }
 
-    const _spawn = spawnFn || spawn;
-    let proc;
-    try {
-      // -dvd-compat: finalise/close the disc for maximum player compatibility.
-      // -Z <dev>=<iso>: initial session burn of the ISO image to the device.
-      // No eject, no verify — by design.
-      proc = _spawn(growisofsPath, ['-dvd-compat', '-Z', `${deviceNode}=${isoPath}`]);
-    } catch (e) {
-      return resolve({ success: false, error: 'growisofs error: ' + e.message });
-    }
-
-    let stdout = '', stderr = '';
-    const emit = (buf, isErr) => {
-      const text = buf.toString();
-      if (isErr) stderr += text; else stdout += text;
-      text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => { try { onLog(l); } catch {} });
-    };
-    if (proc.stdout) proc.stdout.on('data', d => emit(d, false));
-    if (proc.stderr) proc.stderr.on('data', d => emit(d, true));
-    proc.on('error', err => resolve({ success: false, error: 'growisofs error: ' + err.message }));
-    proc.on('close', code => {
-      if (code === 0) {
-        resolve({ success: true });
-      } else {
-        const msg = stderr.trim() || stdout.trim() || `growisofs exited with code ${code}`;
-        resolve({ success: false, error: msg });
+    const startBurn = () => {
+      const _spawn = spawnFn || spawn;
+      let proc;
+      try {
+        // -dvd-compat: finalise/close the disc for maximum player compatibility.
+        // -Z <dev>=<iso>: initial session burn of the ISO image to the device.
+        // No eject, no verify — by design.
+        proc = _spawn(growisofsPath, ['-dvd-compat', '-Z', `${deviceNode}=${isoPath}`]);
+      } catch (e) {
+        return resolve({ success: false, error: 'growisofs error: ' + e.message });
       }
+
+      let stdout = '', stderr = '';
+      const emit = (buf, isErr) => {
+        const text = buf.toString();
+        if (isErr) stderr += text; else stdout += text;
+        text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => { try { onLog(l); } catch {} });
+      };
+      if (proc.stdout) proc.stdout.on('data', d => emit(d, false));
+      if (proc.stderr) proc.stderr.on('data', d => emit(d, true));
+      proc.on('error', err => resolve({ success: false, error: 'growisofs error: ' + err.message }));
+      proc.on('close', code => {
+        if (code === 0) {
+          resolve({ success: true });
+        } else {
+          const msg = stderr.trim() || stdout.trim() || `growisofs exited with code ${code}`;
+          resolve({ success: false, error: msg });
+        }
+      });
+    };
+
+    // Pre-burn unmount, BEST-EFFORT. macOS auto-mounts any disc with a readable
+    // filesystem (a previously burned BD-RE), and growisofs refuses to write to
+    // a mounted volume — its internal unmount fails on macOS (":-( unable to
+    // umount: Block device required") and aborts the burn. A blank/erased disc
+    // has nothing mounted, so diskutil errors there — that must NEVER block the
+    // burn: failures are logged and the burn proceeds regardless.
+    const doUnmount = unmountFn || ((dev, cb) => {
+      let called = false;
+      const finish = (err, output) => { if (!called) { called = true; cb(err, output); } };
+      try {
+        const proc = execFile(
+          DISKUTIL, ['unmountDisk', dev],
+          { timeout: 15000, maxBuffer: 1 << 20 },
+          (err, stdout, stderr) => finish(err, String(stderr || stdout || '')),
+        );
+        proc.on('error', (e) => finish(e, ''));
+      } catch (e) { finish(e, ''); }
+    });
+
+    doUnmount(deviceNode, (err, output) => {
+      const note = String(output || (err && err.message) || '').trim().split('\n')[0];
+      try {
+        if (err) onLog(`unmount ${deviceNode} failed (${note || 'nothing mounted'}) — continuing with burn`);
+        else if (note) onLog(note);
+      } catch {}
+      startBurn();
     });
   });
 }
 
-module.exports = { checkBurner, burnDisc, SYSTEM_PROFILER, DRUTIL, GROWISOFS };
+module.exports = { checkBurner, burnDisc, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
