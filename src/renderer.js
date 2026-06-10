@@ -160,7 +160,9 @@ let state = {
   titleCompatibility: {}, // map of filePath → { compatible, mode, videoCodec, bitrateMbps, reasons }
   burning: false, burnStatus: null, burnMessage: '', burnDone: false, burnError: null,
   burnDriveInfo: null, burnPercent: null,
-  showWelcome: true,  // show onboarding on first launch
+  // Show onboarding on first launch, unless the user ticked "Don't show again".
+  // Persisted alongside other app prefs in localStorage (see disc-forge-theme).
+  showWelcome: localStorage.getItem('disc-forge-hide-welcome') !== '1',
   showAbout: false,
 };
 
@@ -2953,6 +2955,10 @@ function welcomeModalHTML() {
     '<div style="font-size:12px;color:var(--gold-bright);font-weight:700;margin-bottom:4px">💡 Quick tip</div>' +
     '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5">Adding a video auto-detects its embedded audio, subtitle, and chapter tracks — review them in the Project tab\'s Track Summary before building.</div>' +
     '</div>' +
+    '<label style="display:flex;align-items:center;gap:8px;justify-content:center;cursor:pointer;font-size:12px;color:var(--text-secondary);margin-bottom:14px">' +
+    '<input type="checkbox" id="welcome-dont-show" style="width:14px;height:14px;cursor:pointer">' +
+    'Don\'t show this again' +
+    '</label>' +
     '<div class="modal-actions">' +
     '<button class="btn btn-primary" id="close-welcome" style="width:100%;font-size:15px;padding:12px">Get Started →</button>' +
     '</div>' +
@@ -3593,7 +3599,13 @@ function attachListeners() {
     e.preventDefault();
     window.discForge.openExternal('https://ko-fi.com/discforge');
   });
-  document.getElementById('close-welcome')?.addEventListener('click', () => setState({ showWelcome: false }));
+  document.getElementById('close-welcome')?.addEventListener('click', () => {
+    // Persist the preference so the splash is skipped on subsequent launches.
+    if (document.getElementById('welcome-dont-show')?.checked) {
+      localStorage.setItem('disc-forge-hide-welcome', '1');
+    }
+    setState({ showWelcome: false });
+  });
   document.getElementById('save-project-btn')?.addEventListener('click', saveProject);
   document.getElementById('load-project-btn')?.addEventListener('click', loadProject);
 
