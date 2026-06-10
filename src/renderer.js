@@ -169,8 +169,11 @@ let state = {
 function uid()      { return Math.random().toString(36).slice(2,9); }
 function setState(p){
   Object.assign(state, p);
-  // For tab switches and modal changes, render immediately
-  // For text input changes, render is already batched via scheduleRender
+  // Renders synchronously on every state change — including each keystroke in
+  // text fields (setPrjText preserves focus/caret across the rebuild). NOTE:
+  // scheduleRender() above would batch rapid changes but is currently unused;
+  // wiring it into the text-input path is a deliberate behavior change, not a
+  // drive-by fix.
   render();
 }
 function setPrj(p)  { setState({ project: { ...state.project, ...p } }); }
