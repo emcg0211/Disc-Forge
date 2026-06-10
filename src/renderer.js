@@ -3610,7 +3610,8 @@ function attachListeners() {
     const ok = confirm('Insert a blank BD-R disc, then click OK to Burn.\n\nThis will overwrite any disc in the drive.');
     if (!ok) return;
 
-    // 3. Burn via hdiutil (-noverify -noeject: never auto-verify or auto-eject).
+    // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
+    //    node resolved by checkBurner (e.g. /dev/disk9) through to the burn handler.
     window.discForge.removeAllListeners('burn-progress');
     setState({
       burning: true, burnStatus: 'starting', burnMessage: 'Preparing to burn…',
@@ -3623,7 +3624,7 @@ function attachListeners() {
       else if (data.status === 'error') setState({ burning: true, burnError: data.message });
       else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
     });
-    const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath });
+    const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode });
     if (result && result.error) setState({ burning: true, burnError: result.error });
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {

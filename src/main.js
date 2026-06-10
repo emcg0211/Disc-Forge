@@ -102,6 +102,9 @@ const TOOLS = {
   hdiutil:   '/usr/bin/hdiutil',
   xorriso:   findTool(['/opt/homebrew/bin/xorriso', 'xorriso']),
   mkisofs:   findTool(['/opt/homebrew/bin/mkisofs', 'mkisofs']),
+  // growisofs (dvd+rw-tools) — hdiutil burn does NOT support Blu-ray, so BD-R/BD-RE
+  // burning shells out to growisofs instead. Install: brew install dvd+rw-tools.
+  growisofs: findTool(['/opt/homebrew/bin/growisofs', '/usr/local/bin/growisofs', 'growisofs']),
 };
 
 // Friendly install instructions per tool
@@ -583,27 +586,29 @@ ipcMain.handle('chapter:extractThumb', async (_, { videoPath, timestamp, width, 
   }
 });
 
-// ── IPC: direct BD-R burning (v1.23.0) ────────────────────────────────────────
-// disc:checkBurner detects a connected optical burner; disc:burn writes an ISO to
-// disc via hdiutil with -noverify/-noeject (never auto-verify or auto-eject). Both
-// delegate to src/lib/burn.js (testable, Electron-free) and never throw.
+// ── IPC: direct BD-R burning ──────────────────────────────────────────────────
+// disc:checkBurner detects a connected optical burner and its device node;
+// disc:burn writes an ISO to disc via growisofs (hdiutil burn does NOT support
+// Blu-ray). Neither auto-verifies nor auto-ejects. Both delegate to src/lib/burn.js
+// (testable, Electron-free) and never throw.
 
 ipcMain.handle('disc:checkBurner', async () => {
   try {
     const { checkBurner } = require('./lib/burn');
     return await checkBurner();
   } catch {
-    return { found: false, name: null };
+    return { found: false, name: null, deviceNode: null };
   }
 });
 
-ipcMain.handle('disc:burn', async (_, { isoPath } = {}) => {
+ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
   const { burnDisc } = require('./lib/burn');
-  sendLog(`[burn] starting: ${isoPath}`);
+  sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}`);
   try { mainWindow?.webContents.send('burn-progress', { status: 'starting', message: 'Preparing to burn…', percent: 0 }); } catch (_) {}
   const result = await burnDisc({
     isoPath,
-    hdiutilPath: TOOLS.hdiutil || '/usr/bin/hdiutil',
+    deviceNode,
+    growisofsPath: TOOLS.growisofs,
     onLog: (line) => {
       sendLog('[burn] ' + line);
       try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: line, percent: null }); } catch (_) {}

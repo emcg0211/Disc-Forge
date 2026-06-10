@@ -1,15 +1,17 @@
 'use strict';
 /**
- * burn.js — direct BD-R burning helpers for Disc Forge (v1.23.0).
+ * burn.js — direct BD-R burning helpers for Disc Forge.
  *
- * Wraps macOS's built-in `hdiutil burn` so a finished ISO can be written straight
- * to a blank BD-R from inside the app — no third-party tools. The IPC layer
- * (main.js disc:burn / disc:checkBurner) is a thin shell over these functions;
- * keeping the logic here (no Electron dependency) makes it unit-testable.
+ * macOS's built-in `hdiutil burn` does NOT support Blu-ray media, so we shell out
+ * to `growisofs` (from dvd+rw-tools: `brew install dvd+rw-tools`) to write a finished
+ * ISO straight to a blank BD-R/BD-RE. The IPC layer (main.js disc:burn /
+ * disc:checkBurner) is a thin shell over these functions; keeping the logic here
+ * (no Electron dependency) makes it unit-testable.
  *
  * Safety contract (matches the app's hard constraints):
- *   - hdiutil runs with -noverify (skip the 10-15min post-burn read-verify) AND
- *     -noeject (NEVER auto-eject — the user stays in control of the disc).
+ *   - growisofs is invoked as `growisofs -dvd-compat -Z <deviceNode>=<iso>` and
+ *     NOTHING else — no eject, no post-burn verify. The user stays in control of
+ *     the disc.
  *   - burnDisc never throws: it always resolves a { success, error? } result.
  */
 
@@ -17,21 +19,30 @@ const fs = require('fs');
 const { spawn, execFile } = require('child_process');
 
 const SYSTEM_PROFILER = '/usr/sbin/system_profiler';
-const HDIUTIL = '/usr/bin/hdiutil';
+const DRUTIL = '/usr/bin/drutil';
+const GROWISOFS = '/opt/homebrew/bin/growisofs';
 
 /**
- * Detect whether a disc burner is connected via `system_profiler`.
- * Returns { found: boolean, name: string|null } and never throws.
+ * Detect whether a disc burner is connected and resolve its device node.
  *
- * @param {object} [opts]
- * @param {function} [opts.exec] - test seam: exec(cb) → cb(err, stdout). Defaults
- *                                 to running `system_profiler SPDiscBurningDataType -json`.
- * @returns {Promise<{found:boolean, name:string|null}>}
+ * Drive presence + model come from `system_profiler SPDiscBurningDataType -json`
+ * (the same source the rest of the app uses). The device node growisofs needs
+ * (e.g. /dev/disk9) is NOT in system_profiler's output, so it is read separately
+ * from `drutil status` ("Name: /dev/disk9"). Never throws.
+ *
+ * @param {object}   [opts]
+ * @param {function} [opts.exec]       - test seam: exec(cb) → cb(err, stdout) for
+ *                                        system_profiler. Defaults to the real call.
+ * @param {function} [opts.execDrutil] - test seam: execDrutil(cb) → cb(err, stdout)
+ *                                        for `drutil status`. Defaults to the real call.
+ * @returns {Promise<{found:boolean, name:string|null, deviceNode:string|null}>}
  */
-function checkBurner({ exec } = {}) {
+function checkBurner({ exec, execDrutil } = {}) {
   return new Promise((resolve) => {
-    const finish = (found, name) => resolve({ found: !!found, name: name || null });
-    const runner = exec || ((cb) => {
+    const finish = (found, name, deviceNode) =>
+      resolve({ found: !!found, name: name || null, deviceNode: deviceNode || null });
+
+    const runSp = exec || ((cb) => {
       try {
         const proc = execFile(
           SYSTEM_PROFILER, ['SPDiscBurningDataType', '-json'],
@@ -41,45 +52,80 @@ function checkBurner({ exec } = {}) {
         proc.on('error', (e) => cb(e, ''));
       } catch (e) { cb(e, ''); }
     });
-    runner((err, stdout) => {
-      if (err || !stdout) return finish(false, null);
+
+    runSp((err, stdout) => {
+      if (err || !stdout) return finish(false, null, null);
+      let name = null;
       try {
         const data = JSON.parse(stdout.toString());
         const burners = (data && data.SPDiscBurningDataType) || [];
-        if (!Array.isArray(burners) || burners.length === 0) return finish(false, null);
+        if (!Array.isArray(burners) || burners.length === 0) return finish(false, null, null);
         const b = burners[0] || {};
-        finish(true, b._name || b.spdisc_burner_model || 'Optical Drive');
+        name = b._name || b.spdisc_burner_model || 'Optical Drive';
       } catch {
-        finish(false, null);
+        return finish(false, null, null);
       }
+
+      // A burner is present — now resolve its device node from `drutil status`.
+      const runDrutil = execDrutil || ((cb) => {
+        try {
+          const proc = execFile(
+            DRUTIL, ['status'],
+            { timeout: 10000, maxBuffer: 1 << 20 },
+            (e, out) => cb(e, out),
+          );
+          proc.on('error', (e) => cb(e, ''));
+        } catch (e) { cb(e, ''); }
+      });
+
+      runDrutil((derr, dout) => {
+        let deviceNode = null;
+        if (!derr && dout) {
+          const m = dout.toString().match(/\/dev\/r?disk\d+/);
+          if (m) deviceNode = m[0];
+        }
+        finish(true, name, deviceNode);
+      });
     });
   });
 }
 
 /**
- * Burn an ISO to disc via `hdiutil burn <iso> -noverify -noeject -quiet`, streaming
+ * Burn an ISO to disc via `growisofs -dvd-compat -Z <deviceNode>=<iso>`, streaming
  * each output line to onLog. Always resolves a result object — never throws.
+ *
+ * Never auto-ejects and never auto-verifies (growisofs does neither by default and
+ * we pass no flags that would).
  *
  * @param {object}   opts
  * @param {string}   opts.isoPath        - path to the ISO to burn (must exist)
- * @param {string}   [opts.hdiutilPath]  - hdiutil binary (default /usr/bin/hdiutil)
+ * @param {string}   opts.deviceNode     - burner device node from checkBurner (e.g. /dev/disk9)
+ * @param {string}   [opts.growisofsPath]- growisofs binary (default /opt/homebrew/bin/growisofs)
  * @param {function} [opts.onLog]        - called with each trimmed output line
  * @param {function} [opts.spawnFn]      - test seam for child_process.spawn
  * @returns {Promise<{success:boolean, error?:string}>}
  */
-function burnDisc({ isoPath, hdiutilPath = HDIUTIL, onLog = () => {}, spawnFn } = {}) {
+function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, spawnFn } = {}) {
   return new Promise((resolve) => {
     if (!isoPath || !fs.existsSync(isoPath)) {
       return resolve({ success: false, error: `ISO file not found: ${isoPath || '(none)'}` });
     }
+    if (!growisofsPath || !fs.existsSync(growisofsPath)) {
+      return resolve({ success: false, error: 'growisofs not found. Install with: brew install dvd+rw-tools' });
+    }
+    if (!deviceNode) {
+      return resolve({ success: false, error: 'No burner device node found. Connect a Blu-ray burner and try again.' });
+    }
+
     const _spawn = spawnFn || spawn;
     let proc;
     try {
-      // -noverify: skip post-burn read-verify. -noeject: keep the disc in the drive
-      // (never auto-eject). -quiet: suppress hdiutil chatter (we stream our own lines).
-      proc = _spawn(hdiutilPath, ['burn', isoPath, '-noverify', '-noeject', '-quiet']);
+      // -dvd-compat: finalise/close the disc for maximum player compatibility.
+      // -Z <dev>=<iso>: initial session burn of the ISO image to the device.
+      // No eject, no verify — by design.
+      proc = _spawn(growisofsPath, ['-dvd-compat', '-Z', `${deviceNode}=${isoPath}`]);
     } catch (e) {
-      return resolve({ success: false, error: 'hdiutil error: ' + e.message });
+      return resolve({ success: false, error: 'growisofs error: ' + e.message });
     }
 
     let stdout = '', stderr = '';
@@ -90,17 +136,16 @@ function burnDisc({ isoPath, hdiutilPath = HDIUTIL, onLog = () => {}, spawnFn } 
     };
     if (proc.stdout) proc.stdout.on('data', d => emit(d, false));
     if (proc.stderr) proc.stderr.on('data', d => emit(d, true));
-    proc.on('error', err => resolve({ success: false, error: 'hdiutil error: ' + err.message }));
+    proc.on('error', err => resolve({ success: false, error: 'growisofs error: ' + err.message }));
     proc.on('close', code => {
-      const combined = stdout + stderr;
-      if (code === 0 || /Burn completed successfully/i.test(combined)) {
+      if (code === 0) {
         resolve({ success: true });
       } else {
-        const msg = stderr.trim() || stdout.trim() || `hdiutil burn exited with code ${code}`;
+        const msg = stderr.trim() || stdout.trim() || `growisofs exited with code ${code}`;
         resolve({ success: false, error: msg });
       }
     });
   });
 }
 
-module.exports = { checkBurner, burnDisc, SYSTEM_PROFILER, HDIUTIL };
+module.exports = { checkBurner, burnDisc, SYSTEM_PROFILER, DRUTIL, GROWISOFS };

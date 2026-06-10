@@ -33,12 +33,25 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     assertEq(typeof real.found, 'boolean', 'checkBurner.found is a boolean');
     assert(real.name === null || typeof real.name === 'string', 'checkBurner.name is string|null');
 
-    // Injected exec seam: a burner present → found:true with a name.
+    assert(real.deviceNode === null || typeof real.deviceNode === 'string', 'checkBurner.deviceNode is string|null');
+
+    // Injected seams: a burner present → found:true with a name, and the device
+    // node parsed out of `drutil status` (e.g. /dev/disk9) for growisofs.
     const withBurner = await checkBurner({
       exec: (cb) => cb(null, JSON.stringify({ SPDiscBurningDataType: [{ _name: 'HL-DT-ST BD-RE' }] })),
+      execDrutil: (cb) => cb(null, '           Type: BD-RE                Name: /dev/disk9\n'),
     });
     assertEq(withBurner.found, true, 'parses a present burner → found:true');
     assertEq(withBurner.name, 'HL-DT-ST BD-RE', 'parses the burner name');
+    assertEq(withBurner.deviceNode, '/dev/disk9', 'parses the device node from drutil status');
+
+    // Burner present but drutil yields no device node → found:true, deviceNode:null.
+    const noNode = await checkBurner({
+      exec: (cb) => cb(null, JSON.stringify({ SPDiscBurningDataType: [{ _name: 'HL-DT-ST BD-RE' }] })),
+      execDrutil: (cb) => cb(new Error('no drive'), ''),
+    });
+    assertEq(noNode.found, true, 'burner present even if drutil fails → found:true');
+    assertEq(noNode.deviceNode, null, 'no device node from drutil → deviceNode:null');
 
     // Empty list → found:false.
     const none = await checkBurner({ exec: (cb) => cb(null, JSON.stringify({ SPDiscBurningDataType: [] })) });
@@ -70,10 +83,15 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
   // ── 3: burnDisc success/failure parsing via a mock spawn ───────────────────────
   console.log('\n=== 3: burnDisc spawn handling ===');
   {
-    // A fake hdiutil that exits 0 → success. Uses a real temp ISO so the existence
-    // check passes; the spawn itself is mocked so nothing is actually burned.
-    const tmpIso = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'burntest-')), 'fake.iso');
+    // A fake growisofs that exits 0 → success. Uses a real temp ISO so the existence
+    // check passes; the spawn itself is mocked so nothing is actually burned. A second
+    // real file stands in for the growisofs binary so its existence check passes too.
+    const tmpDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'burntest-'));
+    const tmpIso  = path.join(tmpDir, 'fake.iso');
+    const fakeBin = path.join(tmpDir, 'growisofs');
     fs.writeFileSync(tmpIso, 'not a real iso');
+    fs.writeFileSync(fakeBin, '#!/bin/sh\n');
+    const dev = '/dev/disk9';
 
     function fakeSpawn(exitCode, lines = [], emitErr = null) {
       return () => {
@@ -90,19 +108,28 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     }
 
     const logged = [];
-    const okRes = await burnDisc({ isoPath: tmpIso, spawnFn: fakeSpawn(0, ['Opening device', 'Writing track']), onLog: l => logged.push(l) });
+    const okRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, ['Executing growisofs', 'writing to /dev/disk9']), onLog: l => logged.push(l) });
     assertEq(okRes.success, true, 'exit 0 → success:true');
-    assert(logged.includes('Writing track'), 'streams output lines to onLog');
+    assert(logged.includes('writing to /dev/disk9'), 'streams output lines to onLog');
 
-    const failRes = await burnDisc({ isoPath: tmpIso, spawnFn: fakeSpawn(1, ['hdiutil: burn failed - device busy']) });
+    const failRes = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(1, [':-( unable to open /dev/disk9: device busy']) });
     assertEq(failRes.success, false, 'non-zero exit → success:false');
-    assert(/device busy/i.test(failRes.error), 'failure surfaces the hdiutil error');
+    assert(/device busy/i.test(failRes.error), 'failure surfaces the growisofs error');
 
-    const spawnErr = await burnDisc({ isoPath: tmpIso, spawnFn: fakeSpawn(0, [], new Error('spawn ENOENT')) });
+    const spawnErr = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, spawnFn: fakeSpawn(0, [], new Error('spawn ENOENT')) });
     assertEq(spawnErr.success, false, 'spawn error → success:false');
     assert(/ENOENT/.test(spawnErr.error), 'spawn error surfaced in result');
 
-    try { fs.rmSync(path.dirname(tmpIso), { recursive: true, force: true }); } catch {}
+    // growisofs binary missing → clear install hint, never throws.
+    const noBin = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: path.join(tmpDir, 'nope') });
+    assertEq(noBin.success, false, 'missing growisofs → success:false');
+    assert(/dvd\+rw-tools/.test(noBin.error), 'missing growisofs → install hint');
+
+    // No device node → success:false (cannot target a drive), never throws.
+    const noDev = await burnDisc({ isoPath: tmpIso, growisofsPath: fakeBin, spawnFn: fakeSpawn(0) });
+    assertEq(noDev.success, false, 'no deviceNode → success:false');
+
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
 
   // ── 4: IPC handlers are registered in main.js ──────────────────────────────────
@@ -112,9 +139,14 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     assert(mainSrc.includes("ipcMain.handle('disc:burn'"), "main.js registers ipcMain.handle('disc:burn')");
     assert(mainSrc.includes("ipcMain.handle('disc:checkBurner'"), "main.js registers ipcMain.handle('disc:checkBurner')");
     assert(mainSrc.includes("ipcMain.handle('chapter:extractThumb'"), "main.js registers ipcMain.handle('chapter:extractThumb')");
-    // The burn handler must use the no-verify / no-eject safety flags (via burn.js).
+    // BD-R/BD-RE burning must go through growisofs (hdiutil burn cannot write
+    // Blu-ray) and must never auto-eject (no eject call anywhere in burn.js).
     const burnSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'burn.js'), 'utf8');
-    assert(burnSrc.includes('-noverify') && burnSrc.includes('-noeject'), 'burn.js uses -noverify and -noeject');
+    assert(/growisofs/.test(burnSrc), 'burn.js burns via growisofs');
+    assert(burnSrc.includes('-dvd-compat') && burnSrc.includes('-Z'), 'burn.js uses growisofs -dvd-compat -Z');
+    assert(!/_spawn\([^)]*hdiutil/.test(burnSrc), 'burn.js no longer spawns hdiutil');
+    // Never auto-eject: growisofs is not invoked with an -eject flag.
+    assert(!/['"`]-eject['"`]/.test(burnSrc), 'burn.js never passes -eject to growisofs');
 
     // preload exposes the new bridge methods.
     const preSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
