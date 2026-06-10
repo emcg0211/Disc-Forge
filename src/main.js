@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, Notification } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
@@ -578,6 +578,9 @@ ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
       mainWindow?.webContents.send('burn-progress', { status: 'error', message: result.error });
     }
   } catch (_) {}
+  notifyDone(result.success
+    ? 'Disc burned successfully — you may eject the disc'
+    : 'Burn failed — see the log for details');
   sendLog(result.success ? '[burn] complete' : '[burn] failed: ' + result.error);
   return result;
 });
@@ -866,6 +869,7 @@ ipcMain.handle('build-disc', async (_, project) => {
       const errMsg = `"${steps[i].label}" failed:\n\n${err.message}`;
       sendLog('BUILD ERROR: ' + errMsg);
       cleanup(workDir);
+      notifyDone('Build failed — see the log for details');
       return { error: errMsg };
     }
     // Report output file size for this step if available
@@ -890,6 +894,7 @@ ipcMain.handle('build-disc', async (_, project) => {
   sendLog('────────────────────────────────────────');
   const isoSize = fs.existsSync(isoPath) ? fs.statSync(isoPath).size : 0;
   mainWindow.webContents.send('build-progress', { done: true, isoPath, isoSize });
+  notifyDone('Disc image built successfully');
   return { success: true, isoPath };
 });
 
@@ -3215,6 +3220,19 @@ function sendLog(msg) {
   } catch(_) {}
 }
 
+// Completion notification for the two long-running operations only — disc
+// builds (~minutes to hours) and burns (~20+ minutes) — so the app can be
+// backgrounded. Deliberately NOT used for fast operations (project save,
+// thumbnails, previews). Never throws: Notification can fail when the user
+// has denied notification permission.
+function notifyDone(body) {
+  try {
+    if (Notification && Notification.isSupported()) {
+      new Notification({ title: 'Disc Forge', body }).show();
+    }
+  } catch (_) { /* permission denied / unsupported — non-fatal */ }
+}
+
 function progress(step, label, detail) {
   mainWindow?.webContents.send('build-progress', { step, label, detail });
 }
@@ -4286,7 +4304,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
       ff.on('close', code => resolve(code === 0 ? null : `EP${epNum} FFmpeg failed (${code}):\n${stderr.slice(-500)}`));
       ff.on('error', err => resolve(`EP${epNum} FFmpeg error: ${err.message}`));
     });
-    if (ffResult) { cleanup(workDir); return { error: ffResult }; }
+    if (ffResult) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: ffResult }; }
     sendLog(`[MT] EP${epNum}: main.ts ${(fs.statSync(mainTs).size/1e6).toFixed(1)} MB`);
 
     // ── Step A2: Extract / convert subtitle tracks to .sup ────────────────────
@@ -4411,7 +4429,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
       mkv.on('close', code => resolve((code === 0 || code === 1) && fs.existsSync(mainBdMkv) ? null : `EP${epNum} mkvmerge failed (${code})`));
       mkv.on('error', err => resolve(`EP${epNum} mkvmerge error: ${err.message}`));
     });
-    if (mkvResult) { cleanup(workDir); return { error: mkvResult }; }
+    if (mkvResult) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: mkvResult }; }
     sendLog(`[MT] EP${epNum}: main_bd.mkv ${(fs.statSync(mainBdMkv).size/1e6).toFixed(1)} MB`);
 
     // Step C: write tsMuxeR meta — video (track=1) + audio + subtitle tracks
@@ -4463,7 +4481,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
       });
       ts.on('error', err => resolve(`EP${epNum} tsMuxeR error: ${err.message}`));
     });
-    if (tsResult) { cleanup(workDir); return { error: tsResult }; }
+    if (tsResult) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: tsResult }; }
 
     // Log MovieObject.bdmv hex for ep1 — helps debug nav command format
     if (epNum === 1) {
@@ -4504,7 +4522,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
     const epNum  = i + 1;
     const epBd   = epBdFolders[i];
     const prefix = findTsMuxerPrefix(epBd);
-    if (!prefix) { cleanup(workDir); return { error: `Episode ${epNum}: tsMuxeR produced no STREAM file` }; }
+    if (!prefix) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: `Episode ${epNum}: tsMuxeR produced no STREAM file` }; }
     if (epNum === 1) ep1TsMuxerPrefix = prefix;
 
     const dest = pad(epNum);  // '00001', '00002', …
@@ -4517,14 +4535,14 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
 
     // CLIPINF — internal data is binary codec parameters, not ASCII clip refs; copy as-is
     const srcClpi = path.join(epBd, 'BDMV', 'CLIPINF', `${prefix}.clpi`);
-    if (!fs.existsSync(srcClpi)) { cleanup(workDir); return { error: `Episode ${epNum}: no CLPI file found` }; }
+    if (!fs.existsSync(srcClpi)) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: `Episode ${epNum}: no CLPI file found` }; }
     const dstClpi = path.join(bdFolder, 'BDMV', 'CLIPINF', `${dest}.clpi`);
     fs.copyFileSync(srcClpi, dstClpi);
     fs.copyFileSync(srcClpi, path.join(bdFolder, 'BDMV', 'BACKUP', `${dest}.clpi`));
 
     // PLAYLIST — patch clip reference from prefix to dest, then copy
     const srcMpls = path.join(epBd, 'BDMV', 'PLAYLIST', `${prefix}.mpls`);
-    if (!fs.existsSync(srcMpls)) { cleanup(workDir); return { error: `Episode ${epNum}: no MPLS file found` }; }
+    if (!fs.existsSync(srcMpls)) { cleanup(workDir); notifyDone('Build failed — see the log for details'); return { error: `Episode ${epNum}: no MPLS file found` }; }
     const dstMpls = path.join(bdFolder, 'BDMV', 'PLAYLIST', `${dest}.mpls`);
     if (prefix === dest) {
       fs.copyFileSync(srcMpls, dstMpls);
@@ -4620,6 +4638,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
 
   if (errors.length > 0) {
     cleanup(workDir);
+    notifyDone('Build failed — see the log for details');
     return { error: `Disc validation failed:\n\n${errors.map(e => '  • ' + e).join('\n')}` };
   }
   sendLog('[MT] All validation checks passed');
@@ -4665,6 +4684,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
     await packageISO(bdFolder, outDir, name);
   } catch(e) {
     cleanup(workDir);
+    notifyDone('Build failed — see the log for details');
     return { error: `ISO creation failed:\n${e.message}` };
   }
 
@@ -4679,5 +4699,6 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
 
   const isoSize = fs.existsSync(isoPath) ? fs.statSync(isoPath).size : 0;
   mainWindow.webContents.send('build-progress', { done: true, isoPath, isoSize });
+  notifyDone('Disc image built successfully');
   return { success: true, isoPath };
 });
