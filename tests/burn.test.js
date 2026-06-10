@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { EventEmitter } = require('events');
 
-const { checkBurner, burnDisc } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
+const { checkBurner, burnDisc, parseBurnProgress } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -149,6 +149,38 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
       spawnFn: (...a) => { order.push('growisofs'); return fakeSpawn(0)(...a); },
     });
     assertEq(order.join(','), 'unmount,growisofs', 'unmount runs before growisofs');
+
+    // ── 3c: real burn progress parsed from growisofs output ─────────────────────
+    console.log('\n=== 3c: burn progress parsing ===');
+    // parseBurnProgress — the two growisofs formats and the traps.
+    assertEq(parseBurnProgress('4521984/3964231680 ( 0.1%) @0.9x, remaining 14:32 RBU 100.0% UBU  96.9%'),
+      0.1, 'ISO-burn line → parenthesized percent (NOT the RBU/UBU buffer percents)');
+    assertEq(parseBurnProgress('3964231680/3964231680 (100.0%) @0.9x, remaining 0:00 RBU 0.0% UBU 0.0%'),
+      100, 'final line → 100');
+    assertEq(parseBurnProgress(' 12.34% done, estimate finish Tue Jun 10 21:00:00 2026'),
+      12.34, 'mkisofs-style "% done" line parses');
+    assertEq(parseBurnProgress('writing to /dev/disk9'), null, 'plain log line → null');
+    assertEq(parseBurnProgress(':-( unable to open /dev/disk9: device busy'), null, 'error line with parens → null');
+    assertEq(parseBurnProgress('RBU 100.0% UBU 96.9%'), null, 'buffer-fill percents alone → null');
+    assertEq(parseBurnProgress(''), null, 'empty line → null');
+
+    // End-to-end through burnDisc: onProgress fires only for progress lines.
+    const progress = [];
+    const progLog = [];
+    await burnDisc({
+      isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountFn: okUnmount,
+      spawnFn: fakeSpawn(0, [
+        'Executing builtin_dd',
+        '4521984/3964231680 ( 0.1%) @0.9x, remaining 14:32 RBU 100.0% UBU  96.9%',
+        '1982115840/3964231680 (50.0%) @4.0x, remaining 4:10 RBU 99.8% UBU 97.0%',
+        'builtin_dd: flushing cache',
+      ]),
+      onLog: l => progLog.push(l),
+      onProgress: p => progress.push(p),
+    });
+    assertEq(JSON.stringify(progress), JSON.stringify([0.1, 50]),
+      'onProgress receives exactly the parsed percents, in order');
+    assertEq(progLog.length >= 4, true, 'all lines still stream to onLog');
 
     // growisofs binary missing → clear install hint, never throws.
     const noBin = await burnDisc({ isoPath: tmpIso, deviceNode: dev, growisofsPath: path.join(tmpDir, 'nope') });

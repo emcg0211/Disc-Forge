@@ -99,6 +99,31 @@ function checkBurner({ exec, execDrutil } = {}) {
 }
 
 /**
+ * Parse a burn progress percentage out of one growisofs output line.
+ *
+ * growisofs reports progress in two formats:
+ *   - burning a premade ISO (our case, `-Z dev=iso`):
+ *       "4521984/3964231680 ( 0.1%) @0.9x, remaining 14:32 RBU 100.0% UBU  96.9%"
+ *     The real percent is the PARENTHESIZED one — the same line also contains
+ *     "RBU 100.0%" / "UBU 96.9%" (ring/unit buffer fill), which a naive /%/
+ *     regex would match and peg the bar at 100% immediately.
+ *   - generating a filesystem (mkisofs passthrough): "12.34% done, estimate…"
+ *
+ * @param {string} line - one trimmed growisofs output line
+ * @returns {number|null} percent 0-100, or null when the line carries none
+ */
+function parseBurnProgress(line) {
+  const s = String(line || '');
+  const paren = s.match(/\(\s*(\d+(?:\.\d+)?)%\s*\)/);
+  const done  = paren ? null : s.match(/(\d+(?:\.\d+)?)%\s+done/i);
+  const m = paren || done;
+  if (!m) return null;
+  const pct = parseFloat(m[1]);
+  if (!Number.isFinite(pct)) return null;
+  return Math.max(0, Math.min(100, pct));
+}
+
+/**
  * Burn an ISO to disc via `growisofs -dvd-compat -Z <deviceNode>=<iso>`, streaming
  * each output line to onLog. Always resolves a result object — never throws.
  *
@@ -110,13 +135,15 @@ function checkBurner({ exec, execDrutil } = {}) {
  * @param {string}   opts.deviceNode     - burner device node from checkBurner (e.g. /dev/disk9)
  * @param {string}   [opts.growisofsPath]- growisofs binary (default /opt/homebrew/bin/growisofs)
  * @param {function} [opts.onLog]        - called with each trimmed output line
+ * @param {function} [opts.onProgress]   - called with a percent number (0-100) each time a
+ *                                          growisofs output line carries one (see parseBurnProgress)
  * @param {function} [opts.spawnFn]      - test seam for child_process.spawn
  * @param {function} [opts.unmountFn]    - test seam: unmountFn(deviceNode, cb) → cb(err, output)
  *                                          for the pre-burn `diskutil unmountDisk`. Defaults to
  *                                          the real call.
  * @returns {Promise<{success:boolean, error?:string}>}
  */
-function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, spawnFn, unmountFn } = {}) {
+function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, onProgress = () => {}, spawnFn, unmountFn } = {}) {
   return new Promise((resolve) => {
     if (!isoPath || !fs.existsSync(isoPath)) {
       return resolve({ success: false, error: `ISO file not found: ${isoPath || '(none)'}` });
@@ -144,7 +171,13 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
       const emit = (buf, isErr) => {
         const text = buf.toString();
         if (isErr) stderr += text; else stdout += text;
-        text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => { try { onLog(l); } catch {} });
+        // growisofs rewrites its progress line with \r — split on both so each
+        // update is seen as its own line.
+        text.split(/[\r\n]/).map(l => l.trim()).filter(Boolean).forEach(l => {
+          try { onLog(l); } catch {}
+          const pct = parseBurnProgress(l);
+          if (pct !== null) { try { onProgress(pct); } catch {} }
+        });
       };
       if (proc.stdout) proc.stdout.on('data', d => emit(d, false));
       if (proc.stderr) proc.stderr.on('data', d => emit(d, true));
@@ -189,4 +222,4 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
   });
 }
 
-module.exports = { checkBurner, burnDisc, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
+module.exports = { checkBurner, burnDisc, parseBurnProgress, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };

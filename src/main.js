@@ -562,13 +562,21 @@ ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
   const { burnDisc } = require('./lib/burn');
   sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}`);
   try { mainWindow?.webContents.send('burn-progress', { status: 'starting', message: 'Preparing to burn…', percent: 0 }); } catch (_) {}
+  // onLog streams every growisofs line (percent: null → renderer keeps its
+  // last value); onProgress carries the REAL percent parsed from growisofs's
+  // progress lines, so the bar tracks the actual write position.
+  let lastBurnLine = '';
   const result = await burnDisc({
     isoPath,
     deviceNode,
     growisofsPath: TOOLS.growisofs,
     onLog: (line) => {
+      lastBurnLine = line;
       sendLog('[burn] ' + line);
       try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: line, percent: null }); } catch (_) {}
+    },
+    onProgress: (percent) => {
+      try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: lastBurnLine, percent }); } catch (_) {}
     },
   });
   try {
