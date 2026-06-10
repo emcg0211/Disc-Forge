@@ -26,7 +26,6 @@ contextBridge.exposeInMainWorld('discForge', {
   detectBdCompatibility: (fp) => ipcRenderer.invoke('detect-bd-compatibility', fp),
   generateChapterThumbnail: (fp, time, out) => ipcRenderer.invoke('generate-chapter-thumbnail', fp, time, out),
   extractChapterThumb: (opts) => ipcRenderer.invoke('chapter:extractThumb', opts),
-  burnISO:          (iso)     => ipcRenderer.invoke('burn-iso', iso),
   burnDisc:         (opts)    => ipcRenderer.invoke('disc:burn', opts),
   checkBurner:      ()        => ipcRenderer.invoke('disc:checkBurner'),
   onBurnProgress:   (cb)      => ipcRenderer.on('burn-progress', (_, d) => cb(d)),

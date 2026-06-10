@@ -550,3 +550,37 @@ the existing patterns; styles in `src/styles.css`).
 - **Custom fonts** beyond the bundled `MenuFont.ttf` (template `font.file`
   resolves within `assets/fonts`; a font-file picker is deferred to v1.14).
 - **Animated / video backgrounds** — still images and solid colors only.
+
+---
+
+## v1.24.1 — FIRST HARDWARE RESULT + root cause (Jun 10 2026, measured not assumed)
+
+**LG BP350 + Verbatim BD-RE, production single-title menu disc (v1.24.0):**
+menu video + IG buttons RENDER (the S11 render recipe holds on hardware), but
+the menu **looped every few seconds, never showed a selection highlight, and
+ignored all remote input**. Top Menu showed the same non-interactive loop.
+
+Root cause (byte-verified on real tsMuxeR output through the production patch
+chain): `patchMplsForStill` wrote **still_mode=0x01 + still_time=0** — a
+ZERO-SECOND **timed** still, not an infinite still. Per BD-ROM Part 3 §5.3.4
+and libbluray `bluray.h` (`BLURAY_STILL_TIME=0x01`,
+`BLURAY_STILL_INFINITE=0x02`), the v1.10.6 "fix" corrected the field OFFSET
+(byte 30→31) but inverted the VALUE map. The play item therefore ended the
+instant the 5s clip finished, the MovieObject loop (PLAY_PL 98 → 99 →
+JUMP_OBJECT 2) restarted it each cycle, and the IG composition never survived
+long enough to take input. VLC never caught it: libbluray fires still-mode
+events to the host app and VLC ignores them, so software playback looks fine
+with ANY still_mode value. **Fixed in v1.24.1: still_mode=0x02.**
+
+Ruled out (decoded from the same production artifacts, all Toast-identical):
+ICS composition/selection/user timeouts (0/0/0), the no-WDS layout, ICS
+PTS=in_time with DTS lead 12012, ODS decode chain, PMT 0x91@0x1400 with valid
+CRC, defSel=1, visible normal-state objects, self-referential 1-button nav.
+
+New regression suite `tests/single-title-menu.test.js` (39 asserts) pins the
+patch-chain and IG invariants end to end, including still_mode=0x02.
+
+Remaining hardware-only candidate if looping persists after this fix: the
+injected IG packets' ATS spacing (300 ticks apart ≈ a >100 Mbps instantaneous
+burst, far above the 48 Mbps BD-ROM TS rate) — a strict read-buffer model
+could object. One variable at a time: not changed in v1.24.1.

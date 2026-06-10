@@ -111,7 +111,8 @@ function encodeDTS(dts) {
  * Payload format (from pg_decode.c pg_decode_palette_entry):
  *   palette_id(8) palette_version(8)
  *   [per entry]: entry_id(8) Y(8) Cr(8) Cb(8) T(8)
- *   (T=0 opaque, T=255 transparent; Y/Cr/Cb are YCbCr-601 values)
+ *   (T is ALPHA: T=255 opaque, T=0 fully transparent — confirmed by the S11
+ *   disc, see docs/menu_research_progress.md Finding C; Y/Cr/Cb are YCbCr-601)
  *
  * @param {object} opts
  * @param {number} opts.paletteId - palette ID (0-7)
@@ -462,14 +463,7 @@ function encodeICS(opts) {
   dataLenBuf[2] =  icData.length        & 0xFF;
   const ic = Buffer.concat([dataLenBuf, icData]);
 
-  // VideoDescriptor: width(16) height(16) frameRate(4) reserved(4)
-  const vd = Buffer.alloc(4);
-  vd.writeUInt16BE(videoWidth,  0);
-  vd.writeUInt16BE(videoHeight, 2);
-  // TODO: write frame_rate in high nibble: vd[4] = (frameRate << 4) & 0xF0
-  // (Only 4 bytes — frame_rate is packed at bit 32, i.e. byte 4 high nibble)
-  // Actually videoDescriptor is 4 bytes: [W(2)] [H(2)] then [frameRate(4)|reserved(4)] = 1 more byte = 5 total
-  // Fixing: re-allocate as 5 bytes
+  // VideoDescriptor (5 bytes): width(16) height(16) frame_rate(4)|reserved(4)
   const vd5 = Buffer.alloc(5);
   vd5.writeUInt16BE(videoWidth,  0);
   vd5.writeUInt16BE(videoHeight, 2);

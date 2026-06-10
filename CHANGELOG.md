@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.24.1 — 2026-06-10
+
+**Menus are now actually interactive on hardware players**
+
+- THE menu fix: the menu playlist's still_mode byte was 0x01 (a *timed* still)
+  with still_time=0 — a zero-second still. Hardware players (LG BP350) ended
+  the menu play item immediately and the MovieObject loop restarted it every
+  cycle: menu looped endlessly, no button highlight, remote input dead. Now
+  written as 0x02 (BLURAY_STILL_INFINITE) — the menu holds its last frame
+  until the user activates a button. The value map was inverted in v1.10.6
+  while fixing the field offset; VLC never caught it because libbluray
+  delegates still handling to the host app. Verified byte-level on real
+  tsMuxeR output through the production patch chain
+- Audit: removed the dead legacy `burn-iso` hdiutil handler (superseded by
+  the growisofs `disc:burn` path in v1.24.0) and the unreachable
+  `combine-episodes` handler (no caller anywhere); removed the dead 4-byte
+  VideoDescriptor buffer in encodeICS; corrected the inverted PDS alpha-channel
+  doc comment (T=255 is opaque)
+- The other three loop-bug suspects were byte-verified correct and untouched:
+  ICS composition/selection/user timeouts 0/0/0 (Toast-identical), no WDS
+  (Toast has none), ICS PTS=in_time with DTS=PTS−12012 (Toast-exact)
+- New: single-title menu hardware-invariants test suite (still_mode, IG STN
+  declaration, ICS timeout/defSel fields, self-referential navigation,
+  PLAY_PL(0) nav command, segment order, PMT declaration)
+- 1033 tests
+
 ## v1.24.0 — 2026-06-09
 
 **Blu-ray burning via growisofs + single-title menu navigation**
