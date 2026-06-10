@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.24.0 — 2026-06-09
+
+**Blu-ray burning via growisofs + single-title menu navigation**
+
+- Burn BD-R/BD-RE directly: `disc:burn` now shells out to `growisofs`
+  (dvd+rw-tools) using the device node resolved by `checkBurner`, because
+  macOS `hdiutil`'s burn engine does not support Blu-ray media. Still no
+  auto-verify and no auto-eject — you stay in control of the disc
+- Single-title discs now author a real menu: the IG menu pipeline
+  (`addMenuToDisc`) was previously only wired into the multi-title path, so a
+  movie built with menus enabled shipped raw tsMuxeR navigation where
+  FirstPlay and TopMenu both booted straight to the feature. A single-title
+  menu path now wires the menu as FirstPlay + TopMenu, with a single
+  "Play Movie" button → PLAY_PL(0), matching the multi-title behavior
+- "Don't show this again" on the welcome splash: the onboarding modal gains a
+  checkbox that persists to localStorage (`disc-forge-hide-welcome`), so the
+  intro is skipped on subsequent launches
+- 994 tests
+
 ## v1.23.0 — 2026-06-07
 
 **Chapter thumbnails + direct BD-R burning**
