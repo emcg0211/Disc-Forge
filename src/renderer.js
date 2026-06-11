@@ -42,20 +42,11 @@ const TABS = [
   { id:'templates', icon:'🖌', label:'Menus'    },
 ];
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let state = {
-  tab: 'project',
-  appVersion: '',   // populated on boot from app.getVersion() (package.json)
-  lightMode: true,
-  menusEnabled: false,
-  systemFonts: [],  // populated on boot from installed fonts
-  tools: { ffmpeg:{found:false}, ffprobe:{found:false}, tsmuxer:{found:false}, makemkv:{found:false} },
-  building: false, buildSteps: [], buildCurrentStep: -1,
-  buildDone: false, buildError: null, builtIsoPath: null, ffmpegLog: '',
-  buildEndTime: null, stepStartTimes: {}, stepDetails: {},
-  crfTotalSecs: 0,   // total duration of current CRF encode (for ETA)
-  probeCache: {},    // filePath → { duration, videoBitrate, audioStreams }
-  project: {
+// Factory for a fresh project: the single source of truth for the project
+// shape. Loading merges saved data over this so missing fields always get
+// defaults (see mergeProjectWithDefaults).
+function defaultProject() {
+  return {
     title: '', description: '', discLabel: '',
     resolution: RESOLUTIONS[0], videoFormat: VIDEO_FMTS[0], outputDir: '', useSplash: false,
     splashPngPath: null, splashDuration: 5, splashColor: '1a1a2e', useIGMenu: false,
@@ -115,7 +106,53 @@ let state = {
       positions: null,          // null = auto-layout (vertical stack ≤6 / 2-col grid 7+)
       label: 'Scene Selection', // label of the button that opens it from the main menu
     },
-  },
+  };
+}
+
+// ── Project schema ─────────────────────────────────────────────────────────────
+// Version stamp written into every saved .dfp. Bump when the project shape
+// changes incompatibly. Loading rules (see loadProject): missing → v0 legacy
+// (console.warn, defaults fill the gaps); newer than this → warn the user but
+// still load what we can; always merge over defaultProject() so no field is
+// ever undefined.
+const PROJECT_SCHEMA_VERSION = 1;
+
+/**
+ * Merge a loaded project over the defaults: every key of `defaults` is
+ * present in the result; nested objects merge shallowly over their default;
+ * arrays are taken whole (or the default when absent/not an array). Pure —
+ * also exercised directly by tests/renderer-logic.test.js.
+ */
+function mergeProjectWithDefaults(loaded, defaults) {
+  const out = {};
+  for (const key of Object.keys(defaults)) {
+    const def = defaults[key];
+    const val = loaded ? loaded[key] : undefined;
+    if (val === undefined || val === null) { out[key] = def; continue; }
+    if (Array.isArray(def)) { out[key] = Array.isArray(val) ? val : def; continue; }
+    if (def && typeof def === 'object') {
+      out[key] = (val && typeof val === 'object' && !Array.isArray(val)) ? { ...def, ...val } : def;
+      continue;
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let state = {
+  tab: 'project',
+  appVersion: '',   // populated on boot from app.getVersion() (package.json)
+  lightMode: true,
+  menusEnabled: false,
+  systemFonts: [],  // populated on boot from installed fonts
+  tools: { ffmpeg:{found:false}, ffprobe:{found:false}, tsmuxer:{found:false}, makemkv:{found:false} },
+  building: false, buildSteps: [], buildCurrentStep: -1,
+  buildDone: false, buildError: null, builtIsoPath: null, ffmpegLog: '',
+  buildEndTime: null, stepStartTimes: {}, stepDetails: {},
+  crfTotalSecs: 0,   // total duration of current CRF encode (for ETA)
+  probeCache: {},    // filePath → { duration, videoBitrate, audioStreams }
+  project: defaultProject(),
   // ── v1.13.0 menu templates ────────────────────────────────────────────────
   templates: { builtIn: [], user: [], loaded: false },
   templateEditor: {
@@ -3019,22 +3056,12 @@ function aboutModalHTML() {
 
 // ── Project Save/Load ──────────────────────────────────────────────────────────
 async function saveProject() {
+  // Save the COMPLETE project (pre-v1.25 saves cherry-picked fields and
+  // silently dropped igMenuConfig — template choice and button labels were
+  // lost across save/load), stamped with the schema version.
   const proj = {
-    version: '1.5',
-    title: state.project.title,
-    description: state.project.description,
-    discLabel: state.project.discLabel,
-    resolution: state.project.resolution,
-    videoFormat: state.project.videoFormat,
-    outputDir: state.project.outputDir,
-    discSize: state.project.discSize,
-    mainVideo: state.project.mainVideo,
-    titles: state.project.titles || [],
-    audioTracks: state.project.audioTracks,
-    subtitleTracks: state.project.subtitleTracks,
-    chapters: state.project.chapters,
-    extras: state.project.extras,
-    menuConfig: state.project.menuConfig,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
+    ...state.project,
     embeddedTracks: state.embeddedTracks || [],
   };
   const json = JSON.stringify(proj, null, 2);
@@ -3049,29 +3076,18 @@ async function loadProject() {
   if (!json) return;
   try {
     const proj = JSON.parse(json);
+    if (proj.schemaVersion === undefined) {
+      console.warn('Loading a pre-versioned (v0) project file — missing fields get defaults.');
+    } else if (proj.schemaVersion > PROJECT_SCHEMA_VERSION) {
+      alert('This project was created with a newer version of Disc Forge. Some settings may not load correctly.');
+    }
     state.embeddedTracks = proj.embeddedTracks || [];
-    // Match resolution to known values (exact string match required for <select>)
-    const loadedRes = RESOLUTIONS.find(r => r === proj.resolution) || RESOLUTIONS[0];
-    const loadedFmt = VIDEO_FMTS.find(f => f === proj.videoFormat) || VIDEO_FMTS[0];
-    setPrj({
-      title: proj.title || '',
-      description: proj.description || '',
-      discLabel: proj.discLabel || '',
-      resolution: loadedRes,
-      videoFormat: loadedFmt,
-      outputDir: proj.outputDir || '',
-      discSize: proj.discSize || 'BD-25',
-      mainVideo: proj.mainVideo || null,
-      titles: proj.titles || [],
-      audioTracks: proj.audioTracks || [],
-      subtitleTracks: proj.subtitleTracks || [],
-      chapters: proj.chapters || [],
-      extras: proj.extras || [],
-      useSplash: proj.useSplash || false,
-      menuConfig: { ...state.project.menuConfig, ...(proj.menuConfig || {}) },
-      // v1.19.0 — keep a complete chapterMenu (defaults fill in older project files)
-      chapterMenu: { ...state.project.chapterMenu, ...(proj.chapterMenu || {}) },
-    });
+    // Merge over the full defaults so every field exists (never undefined),
+    // then clamp <select>-backed fields to known values (exact string match).
+    const merged = mergeProjectWithDefaults(proj, defaultProject());
+    merged.resolution  = RESOLUTIONS.find(r => r === merged.resolution)  || RESOLUTIONS[0];
+    merged.videoFormat = VIDEO_FMTS.find(f => f === merged.videoFormat) || VIDEO_FMTS[0];
+    setPrj(merged);
   } catch(e) {
     alert('Failed to load project: ' + e.message);
   }
