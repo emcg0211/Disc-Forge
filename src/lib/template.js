@@ -48,8 +48,18 @@ const VALID_LAYOUTS = ['vertical', 'horizontal'];
  * resolved against the bundled assets/fonts dir; absolute paths pass through.
  */
 function resolveFontPath(file) {
-  if (!file) return path.join(FONT_DIR, 'MenuFont.ttf');
-  return path.isAbsolute(file) ? file : path.join(FONT_DIR, file);
+  const p = !file
+    ? path.join(FONT_DIR, 'MenuFont.ttf')
+    : (path.isAbsolute(file) ? file : path.join(FONT_DIR, file));
+  // node-canvas registerFont() is NATIVE code — it opens the file itself and
+  // cannot read inside app.asar (Electron only patches Node's fs, not native
+  // fopen). src/assets/** ships asarUnpacked, so redirect to the real on-disk
+  // twin when running from an asar package. No-op in dev and in tests.
+  if (p.includes(`app.asar${path.sep}`)) {
+    const unpacked = p.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    try { if (fs.existsSync(unpacked)) return unpacked; } catch (_) { /* fall through */ }
+  }
+  return p;
 }
 
 function _isInt(n, lo, hi) {

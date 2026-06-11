@@ -95,7 +95,11 @@
         ]
       }
     ],
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "src/assets/**",
+      "bin/**"
+    ],
     "afterPack": "scripts/afterPack.js"
   },
   "dependencies": {
