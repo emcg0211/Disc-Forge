@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { EventEmitter } = require('events');
 
-const { checkBurner, burnDisc, parseBurnProgress } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
+const { checkBurner, burnDisc, ejectDisc, parseBurnProgress, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -192,6 +192,20 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     assertEq(noDev.success, false, 'no deviceNode → success:false');
 
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // ── 3d: ejectDisc (drutil eject, seam-injected) ─────────────────────────────────
+  console.log('\n=== 3d: ejectDisc ===');
+  {
+    let gotBin = null, gotArgs = null;
+    const ok = await ejectDisc({ execFileFn: (bin, args, cb) => { gotBin = bin; gotArgs = args; setImmediate(() => cb(null, '', '')); } });
+    assertEq(ok.success, true, 'drutil exit 0 → success:true');
+    assertEq(gotBin, DRUTIL, 'invokes drutil');
+    assertEq(JSON.stringify(gotArgs), JSON.stringify(['eject']), 'with the eject verb');
+
+    const fail = await ejectDisc({ execFileFn: (bin, args, cb) => setImmediate(() => cb(new Error('exit 1'), '', 'no media present')) });
+    assertEq(fail.success, false, 'drutil failure → success:false');
+    assert(/no media present/.test(fail.error), 'stderr detail surfaced');
   }
 
   // ── 4: IPC handlers are registered in main.js ──────────────────────────────────

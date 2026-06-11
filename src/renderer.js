@@ -2872,7 +2872,11 @@ function burnModalHTML() {
     <div class="modal-success-ring">💿</div>
     <div class="modal-title" style="color:var(--gold-bright)">Burn Complete!</div>
     <div class="modal-sub">Burn complete. You may eject the disc.</div>
-    <div class="modal-actions"><button class="btn btn-ghost" id="close-burn-modal">Done</button></div>
+    ${state.ejectMsg ? `<div style="font-size:12px;color:var(--text-tertiary);margin:6px 0 2px">${esc(state.ejectMsg)}</div>` : ''}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="close-burn-modal">Done</button>
+      <button class="btn btn-primary" id="eject-disc">⏏ Eject Disc</button>
+    </div>
   </div></div>`;
 
   // Drive info panel
@@ -3619,7 +3623,12 @@ function attachListeners() {
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {
     window.discForge.removeAllListeners('burn-progress');
-    setState({ burning: false, burnDone: false, burnError: null, burnStatus: null, burnMessage: '' });
+    setState({ burning: false, burnDone: false, burnError: null, burnStatus: null, burnMessage: '', ejectMsg: null });
+  });
+  document.getElementById('eject-disc')?.addEventListener('click', async () => {
+    setState({ ejectMsg: 'Ejecting…' });
+    const r = await window.discForge.ejectDisc();
+    setState({ ejectMsg: r && r.success ? 'Disc ejected.' : (r && r.error) || 'Could not eject the disc.' });
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
   document.getElementById('preview-vlc')?.addEventListener('click', previewInVLC);

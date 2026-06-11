@@ -542,6 +542,17 @@ ipcMain.handle('disc:checkBurner', async () => {
   }
 });
 
+// Eject the disc after a successful burn (user-initiated — burns never
+// auto-eject by design).
+ipcMain.handle('disc:eject', async () => {
+  try {
+    const { ejectDisc } = require('./lib/burn');
+    return await ejectDisc();
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // Preview a built ISO in VLC before burning — a seconds-fast structural check
 // versus a ~30-minute burn. VLC-not-installed gets a dialog with the download
 // pointer; the renderer also shows the error inline next to the button.

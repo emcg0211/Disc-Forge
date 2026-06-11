@@ -222,4 +222,34 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
   });
 }
 
-module.exports = { checkBurner, burnDisc, parseBurnProgress, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
+/**
+ * Eject the optical disc via `drutil eject`. Never throws — always resolves
+ * { success, error? }. Used by the burn-success modal's Eject button (the burn
+ * itself never auto-ejects, by design — this is the user choosing to).
+ *
+ * @param {object}   [opts]
+ * @param {function} [opts.execFileFn] - test seam: (bin, args, cb) → cb(err, stdout, stderr)
+ * @returns {Promise<{success:boolean, error?:string}>}
+ */
+function ejectDisc({ execFileFn } = {}) {
+  return new Promise((resolve) => {
+    const run = execFileFn || ((bin, args, cb) => {
+      try {
+        const proc = execFile(bin, args, { timeout: 30000 }, (err, stdout, stderr) => cb(err, stdout, stderr));
+        proc.on('error', (e) => cb(e, '', ''));
+      } catch (e) { cb(e, '', ''); }
+    });
+    let done = false;
+    run(DRUTIL, ['eject'], (err, _stdout, stderr) => {
+      if (done) return; done = true;
+      if (err) {
+        const detail = String(stderr || err.message || '').trim();
+        resolve({ success: false, error: `Could not eject the disc: ${detail || 'unknown error'}` });
+      } else {
+        resolve({ success: true });
+      }
+    });
+  });
+}
+
+module.exports = { checkBurner, burnDisc, ejectDisc, parseBurnProgress, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
