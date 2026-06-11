@@ -602,14 +602,14 @@ ipcMain.handle('open-in-vlc', async (_, isoPath) => {
 let buildInProgress = false;
 let burnInProgress = false;
 
-ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
+ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode, verify = false } = {}) => {
   if (burnInProgress) {
     return { success: false, error: 'A burn is already in progress. Please wait for it to complete.' };
   }
   burnInProgress = true;
   try {
-  const { burnDisc } = require('./lib/burn');
-  sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}`);
+  const { burnDisc, verifyBurn } = require('./lib/burn');
+  sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}${verify ? ' (verify after burn)' : ''}`);
   try { mainWindow?.webContents.send('burn-progress', { status: 'starting', message: 'Preparing to burn…', percent: 0 }); } catch (_) {}
   // onLog streams every growisofs line (percent: null → renderer keeps its
   // last value); onProgress carries the REAL percent parsed from growisofs's
@@ -628,9 +628,21 @@ ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
       try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: lastBurnLine, percent }); } catch (_) {}
     },
   });
+  // Opt-in post-burn verification (B2): first-1MB device read-back compared
+  // against the ISO (see verifyBurn for approach + limitations). A failed
+  // READ-BACK is reported as "could not verify", never as a failed burn.
+  let doneMessage = 'Burn complete. You may eject the disc.';
+  if (result.success && verify) {
+    try { mainWindow?.webContents.send('burn-progress', { status: 'burning', message: 'Verifying disc against the ISO…', percent: 100 }); } catch (_) {}
+    const v = await verifyBurn({ isoPath, deviceNode });
+    if (v.verified === true) doneMessage = 'Burn complete — verification passed: the disc start matches the ISO. You may eject the disc.';
+    else if (v.verified === false) doneMessage = `Burn complete, but verification FAILED — ${v.error}`;
+    else doneMessage = `Burn complete. ${v.error || 'Verification could not run.'}`;
+    sendLog('[burn] verification: ' + (v.verified === true ? 'passed' : v.verified === false ? 'FAILED' : 'skipped — ' + (v.error || '')));
+  }
   try {
     if (result.success) {
-      mainWindow?.webContents.send('burn-progress', { status: 'done', message: 'Burn complete. You may eject the disc.', percent: 100 });
+      mainWindow?.webContents.send('burn-progress', { status: 'done', message: doneMessage, percent: 100 });
     } else {
       mainWindow?.webContents.send('burn-progress', { status: 'error', message: result.error });
     }

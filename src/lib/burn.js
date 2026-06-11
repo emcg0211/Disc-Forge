@@ -277,4 +277,58 @@ function ejectDisc({ execFileFn } = {}) {
   });
 }
 
-module.exports = { checkBurner, burnDisc, ejectDisc, parseBurnProgress, friendlyBurnError, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
+/**
+ * Post-burn spot verification (B2) — opt-in, default off.
+ *
+ * APPROACH + LIMITATION (documented per spec): freshly-burned Blu-rays do not
+ * reliably automount on macOS, so instead of mounting both disc and ISO we
+ * re-read the first 1 MB of the burner device with `dd` (raw rdisk node) and
+ * byte-compare it against the ISO's first 1 MB. This catches a failed/garbage
+ * burn or the wrong disc immediately; it does NOT detect corruption later on
+ * the disc. Reading the raw device can also fail on permissions — that is
+ * reported as verified:null ("could not verify"), never as a failed burn.
+ *
+ * @param {object}   opts
+ * @param {string}   opts.isoPath     - source ISO that was burned
+ * @param {string}   opts.deviceNode  - burner device (e.g. /dev/disk9)
+ * @param {function} [opts.execFileFn]- test seam: (bin, args, opts, cb) → cb(err, stdoutBuf, stderr)
+ * @returns {Promise<{verified:boolean|null, error?:string}>}
+ */
+function verifyBurn({ isoPath, deviceNode, execFileFn } = {}) {
+  return new Promise((resolve) => {
+    let isoHead;
+    try {
+      const fd = fs.openSync(isoPath, 'r');
+      isoHead = Buffer.alloc(1024 * 1024);
+      const n = fs.readSync(fd, isoHead, 0, isoHead.length, 0);
+      fs.closeSync(fd);
+      isoHead = isoHead.slice(0, n);
+    } catch (e) {
+      return resolve({ verified: null, error: `Could not read the ISO for verification: ${e.message}` });
+    }
+    if (!deviceNode) return resolve({ verified: null, error: 'No device node to verify against.' });
+    const rdisk = deviceNode.replace('/dev/disk', '/dev/rdisk');
+
+    const run = execFileFn || ((bin, args, opts, cb) => {
+      try {
+        const proc = execFile(bin, args, opts, (err, stdout, stderr) => cb(err, stdout, stderr));
+        proc.on('error', (e) => cb(e, Buffer.alloc(0), ''));
+      } catch (e) { cb(e, Buffer.alloc(0), ''); }
+    });
+    let done = false;
+    run('/bin/dd', [`if=${rdisk}`, 'bs=1m', 'count=1'], { encoding: 'buffer', timeout: 60000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+      if (done) return; done = true;
+      if (err || !stdout || stdout.length === 0) {
+        return resolve({ verified: null, error: `Could not read the disc back for verification${err ? ` (${err.message})` : ''}. The burn itself reported success.` });
+      }
+      const discHead = stdout.slice(0, isoHead.length);
+      if (discHead.length >= isoHead.length && discHead.equals(isoHead)) {
+        resolve({ verified: true });
+      } else {
+        resolve({ verified: false, error: 'The disc start does not match the ISO — the disc may be corrupt.' });
+      }
+    });
+  });
+}
+
+module.exports = { checkBurner, burnDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };

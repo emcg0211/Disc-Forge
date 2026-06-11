@@ -169,9 +169,9 @@ function showInfo(message, title = 'Disc Forge') {
   _dialogOnConfirm = null;
   setState({ appDialog: { kind: 'info', title, message } });
 }
-function showConfirm(message, onConfirm, { title = 'Are you sure?', confirmLabel = 'OK' } = {}) {
+function showConfirm(message, onConfirm, { title = 'Are you sure?', confirmLabel = 'OK', checkboxLabel = null } = {}) {
   _dialogOnConfirm = onConfirm;
-  setState({ appDialog: { kind: 'confirm', title, message, confirmLabel } });
+  setState({ appDialog: { kind: 'confirm', title, message, confirmLabel, checkboxLabel } });
 }
 function appDialogHTML() {
   const d = state.appDialog;
@@ -179,6 +179,9 @@ function appDialogHTML() {
   return `<div class="modal-backdrop"><div class="modal-box">
     <div class="modal-title">${esc(d.title)}</div>
     <div class="modal-sub" style="white-space:pre-wrap">${esc(d.message)}</div>
+    ${d.checkboxLabel ? `<label style="display:flex;align-items:center;gap:8px;justify-content:center;cursor:pointer;font-size:12px;color:var(--text-secondary);margin-bottom:12px">
+      <input type="checkbox" id="app-dialog-checkbox" style="width:14px;height:14px;cursor:pointer">${esc(d.checkboxLabel)}
+    </label>` : ''}
     <div class="modal-actions">
       ${d.kind === 'confirm' ? '<button class="btn btn-ghost" id="app-dialog-cancel">Cancel</button>' : ''}
       <button class="btn btn-primary" id="app-dialog-ok">${esc(d.confirmLabel || 'OK')}</button>
@@ -2984,7 +2987,7 @@ function burnModalHTML() {
   if (burnDone) return `<div class="modal-backdrop"><div class="modal-box">
     <div class="modal-success-ring">💿</div>
     <div class="modal-title" style="color:var(--gold-bright)">Burn Complete!</div>
-    <div class="modal-sub">Burn complete. You may eject the disc.</div>
+    <div class="modal-sub" style="white-space:pre-wrap">${esc(burnMessage || 'Burn complete. You may eject the disc.')}</div>
     ${state.ejectMsg ? `<div style="font-size:12px;color:var(--text-tertiary);margin:6px 0 2px">${esc(state.ejectMsg)}</div>` : ''}
     <div class="modal-actions">
       <button class="btn btn-ghost" id="close-burn-modal">Done</button>
@@ -3750,7 +3753,9 @@ function attachListeners() {
     }
 
     // 2. Confirm — burning overwrites any disc in the drive. Cancel = escape.
-    showConfirm('Insert a blank BD-R disc, then click Burn.\n\nThis will overwrite any disc in the drive.', async () => {
+    //    The checkbox opts into post-burn verification (default OFF — the
+    //    fast path is unchanged); `verify` arrives as the callback arg.
+    showConfirm('Insert a blank BD-R disc, then click Burn.\n\nThis will overwrite any disc in the drive.', async (verify) => {
       // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
       //    node resolved by checkBurner (e.g. /dev/disk9) through to the burn handler.
       window.discForge.removeAllListeners('burn-progress');
@@ -3765,9 +3770,10 @@ function attachListeners() {
         else if (data.status === 'error') setState({ burning: true, burnError: data.message });
         else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
       });
-      const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode });
+      const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode, verify });
       if (result && result.error) setState({ burning: true, burnError: result.error });
-    }, { title: 'Burn to Disc', confirmLabel: 'Burn' });
+    }, { title: 'Burn to Disc', confirmLabel: 'Burn',
+         checkboxLabel: 'Verify after burn (reads the disc start back — adds about a minute)' });
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {
     window.discForge.removeAllListeners('burn-progress');
@@ -3796,9 +3802,10 @@ function attachListeners() {
   // In-app dialog (showInfo / showConfirm)
   document.getElementById('app-dialog-ok')?.addEventListener('click', () => {
     const fn = _dialogOnConfirm;
+    const checked = !!document.getElementById('app-dialog-checkbox')?.checked;
     _dialogOnConfirm = null;
     setState({ appDialog: null });
-    if (fn) fn();
+    if (fn) fn(checked);
   });
   document.getElementById('app-dialog-cancel')?.addEventListener('click', () => {
     _dialogOnConfirm = null;

@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { EventEmitter } = require('events');
 
-const { checkBurner, burnDisc, ejectDisc, parseBurnProgress, friendlyBurnError, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
+const { checkBurner, burnDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -246,6 +246,44 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     const fail = await ejectDisc({ execFileFn: (bin, args, cb) => setImmediate(() => cb(new Error('exit 1'), '', 'no media present')) });
     assertEq(fail.success, false, 'drutil failure → success:false');
     assert(/no media present/.test(fail.error), 'stderr detail surfaced');
+  }
+
+  // ── 3f: verifyBurn (first-1MB device read-back, seam-injected) ───────────────────
+  console.log('\n=== 3f: verifyBurn ===');
+  {
+    const vDir = fs.mkdtempSync(path.join(os.tmpdir(), 'verifytest-'));
+    const vIso = path.join(vDir, 'v.iso');
+    const head = Buffer.alloc(4096); head.fill(0xAB);
+    fs.writeFileSync(vIso, head);
+
+    let gotBin = null, gotArgs = null;
+    const match = await verifyBurn({
+      isoPath: vIso, deviceNode: '/dev/disk9',
+      execFileFn: (bin, args, opts, cb) => { gotBin = bin; gotArgs = args; setImmediate(() => cb(null, Buffer.from(head), '')); },
+    });
+    assertEq(match.verified, true, 'identical first MB → verified:true');
+    assertEq(gotBin, '/bin/dd', 'reads the device via dd');
+    assert(gotArgs[0] === 'if=/dev/rdisk9', 'uses the RAW device node (rdisk)');
+
+    const bad = Buffer.from(head); bad[100] ^= 0xFF;
+    const mismatch = await verifyBurn({
+      isoPath: vIso, deviceNode: '/dev/disk9',
+      execFileFn: (bin, args, opts, cb) => setImmediate(() => cb(null, bad, '')),
+    });
+    assertEq(mismatch.verified, false, 'differing bytes → verified:false');
+    assert(/corrupt/i.test(mismatch.error), 'mismatch explains the disc may be corrupt');
+
+    const noRead = await verifyBurn({
+      isoPath: vIso, deviceNode: '/dev/disk9',
+      execFileFn: (bin, args, opts, cb) => setImmediate(() => cb(new Error('Operation not permitted'), Buffer.alloc(0), '')),
+    });
+    assertEq(noRead.verified, null, 'unreadable device → verified:null (not a failed burn)');
+    assert(/burn itself reported success/i.test(noRead.error), 'read-back failure is softened');
+
+    const noIso = await verifyBurn({ isoPath: path.join(vDir, 'gone.iso'), deviceNode: '/dev/disk9', execFileFn: () => {} });
+    assertEq(noIso.verified, null, 'missing ISO → verified:null');
+
+    try { fs.rmSync(vDir, { recursive: true, force: true }); } catch {}
   }
 
   // ── 4: IPC handlers are registered in main.js ──────────────────────────────────
