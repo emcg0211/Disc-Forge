@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, session, Notification } = require('electron');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 
@@ -1576,7 +1576,11 @@ function processAdditionalTitle(project, workDir, tsDir, bdFolder, title, titleI
           `Check tsMuxeR log lines above for the actual error.`
         ));
       } else {
-        sendLog(`  ✓ Title ${titleIdx} output validated: ${path.basename(m2tsPath)} (${(size/1e6).toFixed(1)} MB)`);
+        // E1: size alone passes a truncated-but-large mux — also require a
+        // readable, positive duration via ffprobe.
+        const probeErr = probeMuxOutput(m2tsPath, `Title ${titleIdx}`);
+        if (probeErr) return reject(new Error(probeErr));
+        sendLog(`  ✓ Title ${titleIdx} output validated: ${path.basename(m2tsPath)} (${(size/1e6).toFixed(1)} MB, ffprobe OK)`);
         resolve();
       }
     };
@@ -2760,7 +2764,9 @@ function runTsMuxer(workDir, bdFolder) {
 
     const proc = spawn(TOOLS.tsmuxer, [metaFile, bdFolder]);
 
+    let stdout = '';
     proc.stdout.on('data', d => {
+      stdout += d.toString();
       const line = d.toString().trim();
       if (line) sendLog(line);
     });
@@ -2802,6 +2808,19 @@ function runTsMuxer(workDir, bdFolder) {
             'Check that mkvmerge is installed (brew install mkvtoolnix) so Disc Forge can convert main.ts → MKV before passing it to tsMuxeR.'
           ));
         }
+        // E1: tsMuxeR prints "Mux successful complete" on a good run. Exit 0
+        // WITHOUT it means the mux was interrupted or silently incomplete.
+        if (!/mux successful/i.test(stdout)) {
+          return reject(new Error('tsMuxeR exited 0 but never reported "Mux successful" — the mux is incomplete. Check the log above.'));
+        }
+        // E1: probe the largest output with ffprobe (size alone passes a
+        // truncated-but-large mux; duration must be readable and positive).
+        const largest = m2tsFiles
+          .map(f => path.join(streamDir, f))
+          .sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
+        const probeErr = probeMuxOutput(largest, 'Main feature');
+        if (probeErr) return reject(new Error(probeErr));
+        sendLog('  ✓ tsMuxeR success string present; ffprobe validates the output');
         resolve();
       } else {
         reject(new Error(`tsMuxeR exited with code ${code}:\n${stderr.slice(-500)}`));
@@ -3361,6 +3380,32 @@ function checkDiskSpace(inputPaths, targetDir) {
     return `Not enough disk space. Need ${gb(needed)} GB free, only ${gb(availBytes)} GB available on the volume containing ${targetDir}.\n\nFree up space (or choose a different output folder) and try again.`;
   } catch (_) {
     return null;  // a broken check must never block a build
+  }
+}
+
+// Probe a muxed .m2ts with ffprobe (E1): a truncated-but-large mux passes a
+// pure size check, so also require a readable format with a positive duration
+// and a plausible size. Returns an error string, or null when the file probes
+// OK — or when ffprobe itself is unavailable/fails (a broken PROBE must never
+// fail a good mux).
+function probeMuxOutput(m2tsPath, label) {
+  try {
+    if (!TOOLS.ffprobe || !fs.existsSync(m2tsPath)) return null;
+    const out = execFileSync(TOOLS.ffprobe, [
+      '-v', 'error', '-show_entries', 'format=duration,size', '-of', 'json', m2tsPath,
+    ], { timeout: 60000, maxBuffer: 4 << 20 }).toString();
+    const fmt = (JSON.parse(out).format) || {};
+    const duration = parseFloat(fmt.duration);
+    const size = parseInt(fmt.size, 10);
+    if (!Number.isFinite(size) || size < 1e6) {
+      return `${label}: muxed output is implausibly small (${Number.isFinite(size) ? size : '?'} bytes) — the mux likely failed.`;
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return `${label}: muxed output has no readable duration — the file may be truncated or corrupt. Check the tsMuxeR log above.`;
+    }
+    return null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -4088,6 +4133,22 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
   // declares the stream. CLPI/MPLS declarations alone are not sufficient.
   const menuM2ts = patchPmtForIG(injectedM2ts);
   sendLog('[Menu] PMT patched: IG stream_type=0x91 PID=0x1400 added to PMT');
+
+  // E1 validation (read-only): the finished menu clip must actually carry IG
+  // packets on PID 0x1400 (the HDMV IG range per libbluray — NOT 0x1200, which
+  // is Presentation Graphics; routing IG there was the historic v1.10.x bug).
+  // Protects against the inject/patch chain silently producing a button-less clip.
+  {
+    let igPackets = 0;
+    for (let i = 0; i + 192 <= menuM2ts.length; i += 192) {
+      const pkt = menuM2ts.slice(i + 4, i + 192);
+      if (pkt[0] === 0x47 && ((((pkt[1] & 0x1f) << 8) | pkt[2]) === 0x1400)) igPackets++;
+    }
+    if (igPackets === 0) {
+      throw new Error('[Menu] validation failed: the menu clip contains no IG packets on PID 0x1400 after injection');
+    }
+    sendLog(`[Menu] ✓ menu clip carries ${igPackets} IG packets on PID 0x1400`);
+  }
 
   // ── Step 7: Install 00098.* (preload) and 00099.* (menu) ─────────────────
   const destStream   = path.join(bdFolder, 'BDMV', 'STREAM');
