@@ -191,10 +191,35 @@ function fpsToTsMuxer(fps) {
 
 // ── Window ────────────────────────────────────────────────────────────────────
 
+// Window-state persistence (C5): bounds saved to userData on close, restored on
+// launch — but only when still on an attached display (external monitor may be
+// gone), otherwise the defaults apply.
+function windowStatePath() { return path.join(app.getPath('userData'), 'window-state.json'); }
+function readWindowState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(windowStatePath(), 'utf8'));
+    if (!s || !Number.isFinite(s.width) || !Number.isFinite(s.height)) return null;
+    const { screen } = require('electron');  // requires app ready — createWindow runs after
+    const onSomeDisplay = screen.getAllDisplays().some(d => {
+      const a = d.workArea;
+      return s.x >= a.x - 50 && s.y >= a.y - 50 && s.x < a.x + a.width && s.y < a.y + a.height;
+    });
+    return onSomeDisplay ? s : null;
+  } catch (_) { return null; }
+}
+function saveWindowState(win) {
+  try {
+    if (!win || win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return;
+    fs.writeFileSync(windowStatePath(), JSON.stringify(win.getBounds()), 'utf8');
+  } catch (_) { /* best-effort */ }
+}
+
 function createWindow() {
+  const saved = readWindowState();
   mainWindow = new BrowserWindow({
-    width: 1300,
-    height: 840,
+    width: saved ? saved.width : 1300,
+    height: saved ? saved.height : 840,
+    ...(saved && Number.isFinite(saved.x) ? { x: saved.x, y: saved.y } : {}),
     minWidth: 1020,
     minHeight: 680,
     titleBarStyle: 'hiddenInset',
@@ -216,6 +241,8 @@ function createWindow() {
     mainWindow.show();
     mainWindow.focus();
   });
+
+  mainWindow.on('close', () => saveWindowState(mainWindow));
 
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
