@@ -768,22 +768,17 @@ ipcMain.handle('build-disc', async (_, project) => {
   sendLog(`outputDir: ${outputDir}`);
   sendLog(`discName:  ${discName}`);
 
-  // Disk space check — warn if less than 2x video file size is available
-  if (project.mainVideo?.path) {
-    try {
-      const { execSync } = require('child_process');
-      const videoSize = fs.statSync(project.mainVideo.path).size;
-      const dfOut = execSync(`df -k "${outputDir}" 2>/dev/null || df -k "${homeDir}"`).toString();
-      const dfLine = dfOut.trim().split('\n').pop();
-      const availKb = parseInt(dfLine.trim().split(/\s+/)[3]) || 0;
-      const availBytes = availKb * 1024;
-      const neededBytes = videoSize * 2.5;
-      if (availBytes < neededBytes) {
-        const availGb = (availBytes/1e9).toFixed(1);
-        const neededGb = (neededBytes/1e9).toFixed(1);
-        return { error: `Not enough disk space.\n\nAvailable: ${availGb} GB\nEstimated needed: ${neededGb} GB\n\nFree up space on your drive and try again.` };
-      }
-    } catch(_) {}
+  // Disk space preflight — the build needs roughly 2.5× the total input size
+  // (muxed TS copies + BDMV tree + the final ISO) on the volume holding workDir
+  // (= outputDir when it exists), so a multi-hour build can't die with ENOSPC at
+  // the packaging step. Counts ALL input titles, not just the main feature.
+  {
+    const inputPaths = [
+      project.mainVideo?.path,
+      ...((project.titles || []).map(t => t.file?.path)),
+    ].filter(Boolean);
+    const spaceErr = checkDiskSpace(inputPaths, outputDir);
+    if (spaceErr) return { error: spaceErr };
   }
 
   try {
@@ -3239,6 +3234,44 @@ function sendLog(msg) {
   } catch(_) {}
 }
 
+// Disk-space preflight shared by both build pipelines. Estimated requirement =
+// total input bytes × 2.5 (muxed TS copies in workDir + the assembled BDMV tree
+// + the final ISO). Free space comes from fs.statfsSync (Node ≥18.15 — present
+// in this Electron's Node 18) with a `df -k` parse as the fallback for any
+// environment where statfsSync is missing or fails. Returns an error string
+// when space is insufficient, null when OK or when free space can't be
+// determined (never block a build on a failed *check*).
+function checkDiskSpace(inputPaths, targetDir) {
+  try {
+    let totalInput = 0;
+    for (const p of inputPaths) {
+      try { totalInput += fs.statSync(p).size; } catch (_) {}
+    }
+    if (totalInput === 0) return null;
+    const needed = totalInput * 2.5;
+
+    let availBytes = null;
+    if (typeof fs.statfsSync === 'function') {
+      try {
+        const s = fs.statfsSync(targetDir);
+        availBytes = Number(s.bavail) * Number(s.bsize);
+      } catch (_) {}
+    }
+    if (availBytes === null) {
+      // Fallback: parse `df -k` (POSIX: 4th column = available 1K blocks).
+      const dfOut = execSync(`df -k "${targetDir}" 2>/dev/null`).toString();
+      const dfLine = dfOut.trim().split('\n').pop();
+      availBytes = (parseInt(dfLine.trim().split(/\s+/)[3], 10) || 0) * 1024;
+    }
+    if (!availBytes || availBytes >= needed) return null;
+
+    const gb = (n) => (n / 1e9).toFixed(1);
+    return `Not enough disk space. Need ${gb(needed)} GB free, only ${gb(availBytes)} GB available on the volume containing ${targetDir}.\n\nFree up space (or choose a different output folder) and try again.`;
+  } catch (_) {
+    return null;  // a broken check must never block a build
+  }
+}
+
 // Completion notification for the two long-running operations only — disc
 // builds (~minutes to hours) and burns (~20+ minutes) — so the app can be
 // backgrounded. Deliberately NOT used for fast operations (project save,
@@ -4092,6 +4125,14 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
   const homeDir  = os.homedir();
   const outDir   = (outputDir && outputDir.length > 1) ? outputDir : path.join(homeDir, 'Desktop');
   const name     = sanitize(discName || 'Episodes');
+
+  // Disk space preflight (shared with the single-title pipeline) — episodes
+  // re-encode into workDir before muxing, so the 2.5× input estimate applies.
+  {
+    const spaceErr = checkDiskSpace(episodes.map(ep => ep.path), outDir);
+    if (spaceErr) return { error: spaceErr };
+  }
+
   let project_navRefDir = null;
   const tempBase = fs.existsSync(outDir) ? outDir : os.tmpdir();
   const workDir  = path.join(tempBase, `discforge_mt_${Date.now()}`);
