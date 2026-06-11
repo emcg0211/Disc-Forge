@@ -569,7 +569,18 @@ ipcMain.handle('open-in-vlc', async (_, isoPath) => {
   }
 });
 
+// Concurrency lockout (E4): nothing else prevents a second build-disc /
+// disc:burn invoke while one is running (e.g. after a renderer reload
+// mid-build). One operation of each kind at a time; flags clear in finally.
+let buildInProgress = false;
+let burnInProgress = false;
+
 ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
+  if (burnInProgress) {
+    return { success: false, error: 'A burn is already in progress. Please wait for it to complete.' };
+  }
+  burnInProgress = true;
+  try {
   const { burnDisc } = require('./lib/burn');
   sendLog(`[burn] starting: ${isoPath} → ${deviceNode || '(no device)'}`);
   try { mainWindow?.webContents.send('burn-progress', { status: 'starting', message: 'Preparing to burn…', percent: 0 }); } catch (_) {}
@@ -602,6 +613,9 @@ ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
     : 'Burn failed — see the log for details');
   sendLog(result.success ? '[burn] complete' : '[burn] failed: ' + result.error);
   return result;
+  } finally {
+    burnInProgress = false;
+  }
 });
 
 
@@ -697,6 +711,11 @@ ipcMain.handle('probe-file', async (_, filePath) => {
 // ── IPC: build ────────────────────────────────────────────────────────────────
 
 ipcMain.handle('build-disc', async (_, project) => {
+  if (buildInProgress) {
+    return { error: 'A build is already in progress. Please wait for it to complete.' };
+  }
+  buildInProgress = true;
+  try {
   project.forceSafeBluRayOutput = true;
   project.passThroughMode = false;
   project.forceTranscode = true;
@@ -910,6 +929,9 @@ ipcMain.handle('build-disc', async (_, project) => {
   mainWindow.webContents.send('build-progress', { done: true, isoPath, isoSize });
   notifyDone('Disc image built successfully');
   return { success: true, isoPath };
+  } finally {
+    buildInProgress = false;
+  }
 });
 
 // ── Step 1: FFmpeg — mux main feature to MPEG-TS ──────────────────────────────
@@ -4111,6 +4133,11 @@ async function addMenuToDisc(bdFolder, numEpisodes, workDir, igMenuConfig = {}, 
 // Then merge all BDMV outputs and fix navigation.
 
 ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discName, fastEncode, resolution, useSplash, splashPngPath = null, splashDuration = 5, splashColor = '1a1a2e', useIGMenu = false, menusEnabled = false, igMenuConfig = {} }) => {
+  if (buildInProgress) {
+    return { error: 'A build is already in progress. Please wait for it to complete.' };
+  }
+  buildInProgress = true;
+  try {
   if (!TOOLS.ffmpeg)   return { error: 'FFmpeg not found.\n\nInstall: brew install ffmpeg' };
   if (!TOOLS.tsmuxer)  return { error: 'tsMuxeR not found.\n\nInstall: brew install --cask tsmuxer' };
   if (!TOOLS.mkvmerge) return { error: 'mkvmerge not found.\n\nInstall: brew install mkvtoolnix' };
@@ -4761,4 +4788,7 @@ ipcMain.handle('build-multi-title-disc', async (_, { episodes, outputDir, discNa
   mainWindow.webContents.send('build-progress', { done: true, isoPath, isoSize });
   notifyDone('Disc image built successfully');
   return { success: true, isoPath };
+  } finally {
+    buildInProgress = false;
+  }
 });
