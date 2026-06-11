@@ -619,6 +619,46 @@ ipcMain.handle('disc:burn', async (_, { isoPath, deviceNode } = {}) => {
 });
 
 
+// ── Recent projects (C1) ─────────────────────────────────────────────────────
+// Persisted as JSON in userData; max 8 entries, most recent first.
+const RECENTS_MAX = 8;
+function recentsPath() { return path.join(app.getPath('userData'), 'recent-projects.json'); }
+function readRecents() {
+  try {
+    const list = JSON.parse(fs.readFileSync(recentsPath(), 'utf8'));
+    return Array.isArray(list) ? list.filter(p => typeof p === 'string') : [];
+  } catch (_) { return []; }
+}
+function addRecent(filePath) {
+  try {
+    const list = [filePath, ...readRecents().filter(p => p !== filePath)].slice(0, RECENTS_MAX);
+    fs.writeFileSync(recentsPath(), JSON.stringify(list, null, 2), 'utf8');
+  } catch (_) { /* recents are best-effort */ }
+}
+function removeRecent(filePath) {
+  try {
+    fs.writeFileSync(recentsPath(), JSON.stringify(readRecents().filter(p => p !== filePath), null, 2), 'utf8');
+  } catch (_) {}
+}
+ipcMain.handle('recents:list', async () => readRecents());
+ipcMain.handle('recents:clear', async () => { try { fs.writeFileSync(recentsPath(), '[]', 'utf8'); } catch (_) {} return []; });
+
+// Load a specific project file (recent-projects click). A missing file is
+// reported AND removed from the recents list.
+ipcMain.handle('load-project-path', async (_, filePath) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      removeRecent(filePath);
+      return { error: 'not-found' };
+    }
+    const json = fs.readFileSync(filePath, 'utf8');
+    addRecent(filePath);
+    return { filePath, json };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 ipcMain.handle('save-project-file', async (_, json) => {
   const r = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Disc Forge Project',
@@ -630,6 +670,7 @@ ipcMain.handle('save-project-file', async (_, json) => {
   // the renderer's bare await swallowed it and the user got no feedback at all.
   try {
     fs.writeFileSync(r.filePath, json, 'utf8');
+    addRecent(r.filePath);
     return r.filePath;
   } catch (e) {
     dialog.showErrorBox('Save failed', `Could not save the project:\n${e.message}`);
@@ -645,7 +686,9 @@ ipcMain.handle('load-project-file', async () => {
   });
   if (r.canceled || !r.filePaths.length) return null;
   try {
-    return fs.readFileSync(r.filePaths[0], 'utf8');
+    const json = fs.readFileSync(r.filePaths[0], 'utf8');
+    addRecent(r.filePaths[0]);
+    return json;
   } catch (e) {
     dialog.showErrorBox('Open failed', `Could not read the project file:\n${e.message}`);
     return null;

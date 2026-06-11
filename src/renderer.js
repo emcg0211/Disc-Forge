@@ -273,6 +273,7 @@ async function boot() {
   const outputDir = homeDir + '/Desktop';
   const appVersion = await window.discForge.getAppVersion().catch(() => '');
   setState({ tools, appVersion, project: { ...state.project, outputDir } });
+  refreshRecents();  // recent-projects list for the welcome screen (non-blocking)
   ensureMenuFont();  // warm the menu-preview font (non-blocking)
 
   // Load installed system fonts (enumerated once in the main process via font-list).
@@ -3029,12 +3030,24 @@ function welcomeModalHTML() {
       '</div></div>';
   }).join('');
 
+  const recents = state.recentProjects || [];
+  const recentsHTML = recents.length === 0 ? '' :
+    '<div style="border:1px solid var(--border-dim);border-radius:8px;padding:10px 12px;margin-bottom:16px">' +
+    '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:6px">Recent Projects</div>' +
+    recents.map(p =>
+      '<a href="#" data-recent-path="' + esc(p) + '" style="display:block;font-size:12px;color:var(--gold-bright);text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p) + '">' +
+      esc(p.split('/').pop()) + ' <span style="color:var(--text-tertiary)">— ' + esc(p.split('/').slice(0, -1).join('/')) + '</span></a>'
+    ).join('') +
+    '<a href="#" id="clear-recents" style="display:inline-block;font-size:11px;color:var(--text-tertiary);text-decoration:none;margin-top:6px">Clear recent</a>' +
+    '</div>';
+
   return '<div class="modal-backdrop"><div class="modal-box" style="max-width:480px">' +
     '<div style="text-align:center;margin-bottom:20px">' +
     '<div style="font-size:48px;margin-bottom:8px">💿</div>' +
     '<div style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:6px">Welcome to Disc Forge</div>' +
     '<div style="font-size:13px;color:var(--text-tertiary)">Professional Blu-ray authoring for macOS</div>' +
     '</div>' +
+    recentsHTML +
     stepsHTML +
     '<div style="background:var(--gold-glow);border:1px solid rgba(219,184,90,0.3);border-radius:8px;padding:12px 14px;margin-bottom:16px">' +
     '<div style="font-size:12px;color:var(--gold-bright);font-weight:700;margin-bottom:4px">💡 Quick tip</div>' +
@@ -3128,9 +3141,9 @@ async function saveProject() {
   }
 }
 
-async function loadProject() {
-  const json = await window.discForge.loadProjectFile();
-  if (!json) return;
+// Parse + apply a loaded .dfp (shared by the Load button and the welcome
+// screen's recent-projects list).
+function applyLoadedProject(json) {
   try {
     const proj = JSON.parse(json);
     if (proj.schemaVersion === undefined) {
@@ -3145,8 +3158,34 @@ async function loadProject() {
     merged.resolution  = RESOLUTIONS.find(r => r === merged.resolution)  || RESOLUTIONS[0];
     merged.videoFormat = VIDEO_FMTS.find(f => f === merged.videoFormat) || VIDEO_FMTS[0];
     setPrj(merged);
+    return true;
   } catch(e) {
     showInfo('Failed to load project: ' + e.message);
+    return false;
+  }
+}
+
+async function loadProject() {
+  const json = await window.discForge.loadProjectFile();
+  if (!json) return;
+  applyLoadedProject(json);
+  refreshRecents();
+}
+
+async function refreshRecents() {
+  try { setState({ recentProjects: await window.discForge.recentsList() }); } catch (_) {}
+}
+
+async function loadRecentProject(filePath) {
+  const r = await window.discForge.loadProjectPath(filePath);
+  if (r && r.json) {
+    if (applyLoadedProject(r.json)) setState({ showWelcome: false });
+    refreshRecents();
+  } else {
+    await refreshRecents();
+    showInfo(r && r.error === 'not-found'
+      ? 'File not found — removed from recent projects.'
+      : 'Could not open project: ' + ((r && r.error) || 'unknown error'));
   }
 }
 
@@ -3717,6 +3756,15 @@ function attachListeners() {
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
   document.getElementById('preview-vlc')?.addEventListener('click', previewInVLC);
+
+  // Recent projects (welcome screen)
+  document.querySelectorAll('[data-recent-path]').forEach(el => {
+    el.addEventListener('click', (e) => { e.preventDefault(); loadRecentProject(el.dataset.recentPath); });
+  });
+  document.getElementById('clear-recents')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    setState({ recentProjects: await window.discForge.recentsClear() });
+  });
 
   // In-app dialog (showInfo / showConfirm)
   document.getElementById('app-dialog-ok')?.addEventListener('click', () => {
