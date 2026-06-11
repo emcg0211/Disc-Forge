@@ -97,6 +97,25 @@ console.log('\n=== 4: schema-version wiring in renderer source ===');
   assert(/mergeProjectWithDefaults\(proj, defaultProject\(\)\)/.test(SRC), 'loadProject merges over full defaults');
 }
 
+console.log('\n=== 5: moveTitle (title reordering) ===');
+{
+  const moveTitle = new Function(`${extractFn('moveTitle')}; return moveTitle;`)();
+  const t = (ids) => ids.map(id => ({ id }));
+  const ids = (arr) => arr.map(x => x.id).join(',');
+
+  assertEq(ids(moveTitle(t(['a','b','c']), 1, -1)), 'b,a,c', 'move middle up');
+  assertEq(ids(moveTitle(t(['a','b','c']), 1, 1)), 'a,c,b', 'move middle down');
+  assertEq(ids(moveTitle(t(['a','b','c']), 0, -1)), 'a,b,c', 'moving first up is a no-op');
+  assertEq(ids(moveTitle(t(['a','b','c']), 2, 1)), 'a,b,c', 'moving last down is a no-op');
+  assertEq(ids(moveTitle(t(['a']), 0, 1)), 'a', 'single item is a no-op');
+  assertEq(ids(moveTitle([], 0, 1)), '', 'empty array is safe');
+  assertEq(ids(moveTitle(null, 0, 1)), '', 'null is safe');
+  const orig = t(['a','b']);
+  moveTitle(orig, 0, 1);
+  assertEq(ids(orig), 'a,b', 'input array is not mutated');
+  assert(/data-move-title/.test(SRC) && /moveTitle\(state\.project\.titles/.test(SRC), 'arrows wired to moveTitle in the UI');
+}
+
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) { console.log('OVERALL: FAIL'); process.exit(1); }

@@ -123,6 +123,19 @@ const PROJECT_SCHEMA_VERSION = 1;
  * arrays are taken whole (or the default when absent/not an array). Pure —
  * also exercised directly by tests/renderer-logic.test.js.
  */
+/**
+ * Swap titles[index] with its neighbour in direction dir (-1 up / +1 down).
+ * Returns a NEW array; out-of-range moves (first item up, last item down)
+ * return an unchanged copy. Pure — exercised by tests/renderer-logic.test.js.
+ */
+function moveTitle(titles, index, dir) {
+  const arr = [...(titles || [])];
+  const j = index + dir;
+  if (index < 0 || index >= arr.length || j < 0 || j >= arr.length) return arr;
+  [arr[index], arr[j]] = [arr[j], arr[index]];
+  return arr;
+}
+
 function mergeProjectWithDefaults(loaded, defaults) {
   const out = {};
   for (const key of Object.keys(defaults)) {
@@ -2615,6 +2628,16 @@ function pageProject(p) {
                   ${i === 0 && p.mainVideo ? '<span class="badge badge-gold">Main</span>' : ''}
                   ${compatBadge}
                   ${qualityBadge}
+                  ${(() => {
+                    // Reorder arrows for ADDITIONAL titles only (the main video
+                    // stays first — its slot determines the passthrough check
+                    // and FirstPlay wiring). tIdx = index within project.titles.
+                    if (t.id === '__main__') return '';
+                    const tIdx = i - (p.mainVideo ? 1 : 0);
+                    const last = (p.titles || []).length - 1;
+                    return `<button class="btn btn-ghost btn-xs" data-move-title="${tIdx}" data-move-dir="-1" title="Move up" ${tIdx === 0 ? 'disabled' : ''}>↑</button>` +
+                           `<button class="btn btn-ghost btn-xs" data-move-title="${tIdx}" data-move-dir="1" title="Move down" ${tIdx >= last ? 'disabled' : ''}>↓</button>`;
+                  })()}
                   <button class="btn btn-danger" data-rm-title="${t.id}">✕</button>
                 </div>
               </div>
@@ -3547,6 +3570,15 @@ function attachListeners() {
   });
 
   // Remove title
+  // Title reordering (↑/↓ on additional-title rows). setPrj re-renders, which
+  // also refreshes the disc-size estimate and any visible menu/chapter preview.
+  document.querySelectorAll('[data-move-title]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.moveTitle, 10);
+      const dir = parseInt(btn.dataset.moveDir, 10);
+      setPrj({ titles: moveTitle(state.project.titles, idx, dir) });
+    });
+  });
   document.querySelectorAll('[data-rm-title]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.rmTitle;
