@@ -607,3 +607,22 @@ untouched (golden hashes unchanged).
 
 Next single variable if hardware still fails: the DTS marker nibble
 (Toast writes the out-of-spec 0x0; we write spec-correct 0x1).
+
+---
+
+## ✅ HARDWARE CONFIRMED — interactive menus work on the LG BP350 (Jun 11 2026)
+
+Burned disc built from commit `8f9e6bd` (the ATS re-pacing fix, shipped as
+v1.25.2): **boots to the menu, the button renders and is SELECTED, and the
+menu holds.** The 300-tick ATS burst was the root cause of every menu
+interaction failure across all prior builds — the v1.24.x fixes (still_mode
+0x02, horizontal button position, JUMP_OBJECT activation) were all correct
+but unobservable behind the dropped IG stream.
+
+The DTS-marker-nibble fallback (Toast's 0x0 vs our spec-correct 0x1) is
+**NOT NEEDED** — the LG accepts the spec-correct nibble once the IG actually
+arrives within the transport ceiling.
+
+Pending observations (not yet verified on hardware — do not claim):
+- end-of-clip return-to-menu (the per-button MovieObject JUMP_OBJECT(2) path)
+- arrow-key navigation behavior (multi-button menus)

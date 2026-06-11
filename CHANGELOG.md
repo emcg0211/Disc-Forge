@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.25.2 — 2026-06-11
+
+**Interactive menus now verified working on hardware**
+
+- The fix: injected IG packets were stamped 300 ticks apart
+  (135 Mbps instantaneous, ~3x the BD-ROM 48 Mbps transport ceiling),
+  so strict hardware demuxes dropped the entire interactive layer —
+  the menu video played but no buttons existed as far as the player
+  was concerned. Packets are now paced at ~13-17 Mbps inside the
+  splice window, monotonic, and well ahead of the decode deadline.
+  Verified on an LG BP350: menu renders, button selected, remote live
+- This was the root cause of every "menu loops / no highlight /
+  remote dead" symptom across all prior releases; the v1.24.x
+  still_mode, button position, and JUMP_OBJECT fixes were all
+  correct but unobservable behind the dropped stream
+- 1157 tests
+
 ## v1.25.1 — 2026-06-11
 
 **UI/UX polish pass**
