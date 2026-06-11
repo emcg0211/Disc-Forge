@@ -2253,11 +2253,25 @@ function pageTemplates() {
   const showEditor = !!tpl && !ro;
   const right = showEditor ? templateEditorHTML(tpl) : '';
 
+  // A6: users landing here with menus disabled saw a fully interactive
+  // designer whose work would never reach the disc. Make the state obvious
+  // and enable-able in place (the Project tab toggle stays).
+  const menusOffBanner = state.menusEnabled ? '' : `
+    <div style="display:flex;align-items:center;gap:12px;background:var(--gold-glow);border:1px solid rgba(219,184,90,0.4);border-radius:10px;padding:12px 16px;margin-bottom:14px">
+      <span style="font-size:18px">⚠️</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:700;color:var(--gold-bright)">Menus are OFF</div>
+        <div style="font-size:12px;color:var(--text-secondary)">Designs here won't be burned to disc until menus are enabled (Beta — may not work on all players).</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="menus-banner-enable">Enable Menus</button>
+    </div>`;
+
   return `
     <div class="page-header"><div class="page-header-left">
       <div class="page-title">Menu Designer</div>
       <div class="page-subtitle">Design the look of your interactive disc menu — pick a template, then customize it.</div>
     </div></div>
+    ${menusOffBanner}
     <div class="menus-layout ${showEditor ? 'has-editor' : ''}">
       <div class="menus-browser">${designSelectorHTML()}</div>
       <div class="menus-center">${center}</div>
@@ -3766,6 +3780,9 @@ function attachListeners() {
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
   document.getElementById('preview-vlc')?.addEventListener('click', previewInVLC);
+
+  // Menus-off banner on the Menus tab (A6)
+  document.getElementById('menus-banner-enable')?.addEventListener('click', () => setState({ menusEnabled: true }));
 
   // Recent projects (welcome screen)
   document.querySelectorAll('[data-recent-path]').forEach(el => {
