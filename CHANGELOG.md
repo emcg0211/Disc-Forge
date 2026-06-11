@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.25.1 — 2026-06-11
+
+**UI/UX polish pass**
+
+- About modal: version number is now dynamic (was hardcoded at "1.11.0" for ten
+  releases), tagline updated, version history extended through v1.25.0, and
+  "Powered by" corrected from hdiutil to growisofs · xorriso
+- Welcome modal: step text left-aligned (was centering next to left-anchored
+  icons), step-3 copy updated for the new Menus enable button
+- Chapters tab: subtitle removes FFMETADATA jargon; empty state now mentions
+  both ways to add chapters
+- Recent-project links: proper hover states (moved from inline style to CSS
+  class); left-aligned inside the centered modal
+- 1150 tests
+
 ## v1.25.0 — 2026-06-11
 
 **Fourteen improvements: burn workflow, project safety, UI polish, asar**
