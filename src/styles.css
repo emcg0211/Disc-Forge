@@ -960,6 +960,32 @@ input[type=checkbox] {
 .tool-pill.warn { background: rgba(180,120,0,0.15); border-color: rgba(180,120,0,0.3); color: var(--text-dim); }
 .tool-dot.warn  { background: #b47800; box-shadow: 0 0 6px #b47800; }
 
+/* ── Recent projects (welcome modal) ──────────────────────────────────────── */
+.recent-link {
+  display: block;
+  font-size: 12px;
+  color: var(--gold-bright);
+  text-decoration: none;
+  padding: 3px 4px;
+  margin: 0 -4px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  transition: background var(--t-fast);
+}
+.recent-link:hover { background: var(--bg-hover); text-decoration: underline; }
+.recent-clear-link {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-decoration: none;
+  margin-top: 6px;
+  transition: color var(--t-fast);
+}
+.recent-clear-link:hover { color: var(--text-secondary); text-decoration: underline; }
+
 /* ── Light Mode ─────────────────────────────────────────────────────────────── */
 body.light-mode {
   /* Core backgrounds */

@@ -2815,7 +2815,7 @@ function pageChapters(p, f) {
     <div class="page-header">
       <div class="page-header-left">
         <div class="page-title">Chapters</div>
-        <div class="page-subtitle">Define navigation markers — embedded as FFMETADATA in the stream</div>
+        <div class="page-subtitle">Define navigation markers — viewers can jump straight to them with the remote</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" id="import-chapters-btn">📥 Import from Video</button>
@@ -2824,7 +2824,7 @@ function pageChapters(p, f) {
       </div>
     </div>
     <div class="card" style="margin-bottom:16px">
-      <div class="card-header"><div class="card-icon">➕</div><div><div class="card-title">Add Chapter</div></div></div>
+      <div class="card-header"><div class="card-icon">➕</div><div><div class="card-title">New Chapter</div></div></div>
       <div class="card-body">
         <div class="grid-2" style="margin-bottom:14px">
           <div class="field"><label class="field-label">Chapter Name</label>
@@ -2840,7 +2840,7 @@ function pageChapters(p, f) {
       </div>
     </div>
     ${p.chapters.length===0
-      ? `<div class="empty-state"><div class="empty-state-icon">≡</div><div class="empty-state-text">No chapters defined yet</div></div>`
+      ? `<div class="empty-state"><div class="empty-state-icon">≡</div><div class="empty-state-text">No chapters yet — add one above, or use Import from Video</div></div>`
       : `<div class="track-list">${p.chapters.map((c,i)=>`
           <div class="track-card">
             <span class="track-num">${i+1}</span>
@@ -3038,12 +3038,14 @@ function welcomeModalHTML() {
   const steps = [
     { icon:'🎬', title:'Add your videos', desc:'Go to the Project tab and click "Add Videos" to add one or more MKV, MP4, or M2TS files. Each file becomes a title on the disc.' },
     { icon:'🔊', title:'Choose your tracks', desc:'The app auto-detects all embedded audio and subtitle tracks. Check or uncheck exactly what you want included.' },
-    { icon:'🖌', title:'Pick a menu (optional)', desc:'Enable "Menus" in Project Settings, then open the Menus tab to choose a template. A full-screen preview shows exactly how the disc menu will look.' },
+    { icon:'🖌', title:'Pick a menu (optional)', desc:'Open the Menus tab, enable menus, and choose a template. A full-screen preview shows exactly how the disc menu will look.' },
     { icon:'🔨', title:'Build & burn', desc:'Click "Build Disc Image" to create your ISO. Once done, insert a blank BD-R and click "Burn to Disc".' },
   ];
 
   const stepsHTML = steps.map(function(s) {
-    return '<div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:14px">' +
+    // text-align:left — the modal box centers text globally, which made these
+    // icon-led rows read ragged (centered text next to a left-anchored icon).
+    return '<div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:14px;text-align:left">' +
       '<div style="width:36px;height:36px;border-radius:10px;background:var(--gold-glow);border:1px solid rgba(219,184,90,0.4);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">' + s.icon + '</div>' +
       '<div>' +
       '<div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:3px">' + s.title + '</div>' +
@@ -3056,10 +3058,10 @@ function welcomeModalHTML() {
     '<div style="border:1px solid var(--border-dim);border-radius:8px;padding:10px 12px;margin-bottom:16px">' +
     '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:6px">Recent Projects</div>' +
     recents.map(p =>
-      '<a href="#" data-recent-path="' + esc(p) + '" style="display:block;font-size:12px;color:var(--gold-bright);text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p) + '">' +
+      '<a href="#" class="recent-link" data-recent-path="' + esc(p) + '" title="' + esc(p) + '">' +
       esc(p.split('/').pop()) + ' <span style="color:var(--text-tertiary)">— ' + esc(p.split('/').slice(0, -1).join('/')) + '</span></a>'
     ).join('') +
-    '<a href="#" id="clear-recents" style="display:inline-block;font-size:11px;color:var(--text-tertiary);text-decoration:none;margin-top:6px">Clear recent</a>' +
+    '<a href="#" id="clear-recents" class="recent-clear-link">Clear recent</a>' +
     '</div>';
 
   return '<div class="modal-backdrop"><div class="modal-box" style="max-width:480px">' +
@@ -3086,7 +3088,15 @@ function welcomeModalHTML() {
 
 // ── About Modal ───────────────────────────────────────────────────────────────
 function aboutModalHTML() {
+  // The in-app history fell ten releases behind (it ended at v1.15.1 while the
+  // app shipped v1.25.0). Recent releases are condensed from CHANGELOG.md —
+  // that file remains the authoritative, complete history.
   const versions = [
+    { v:'1.25.0', notes:['Eject button and opt-in verify after burn', 'Friendly burn errors, disk-space preflight, mux validation', 'Project files now versioned and safe to load across versions (also fixes menu settings being lost on save)', 'Recent projects, window-state memory, title reordering, in-app dialogs', 'Smoother typing (batched re-renders) and a clear Menus on/off banner'] },
+    { v:'1.24.3', notes:['Preview in VLC button after a successful build', 'macOS notifications when builds and burns finish', 'Real burn progress percentage from growisofs', 'npm test + GitHub Actions CI (1080 tests at release)'] },
+    { v:'1.24.2', notes:['Horizontal-template buttons now sit inside the bottom bar on disc (they rendered mid-screen)', 'Menu buttons activate via MovieObjects (the pattern of the only menu proven interactive on the LG BP350) — and playback returns to the menu when a title ends'] },
+    { v:'1.24.1', notes:['THE menu fix: menus now hold (infinite still) instead of looping every few seconds with dead remote input — still_mode byte was a zero-second timed still since v1.10.6', 'Pre-burn unmount so growisofs never aborts on a mounted or blank disc'] },
+    { v:'1.24.0', notes:['Burn BD-R/BD-RE directly via growisofs (hdiutil cannot burn Blu-ray)', 'Single-title discs get a real menu: FirstPlay + TopMenu wired with a Play Movie button', 'Welcome screen gains a do-not-show-again option'] },
     { v:'1.15.1', notes:['UI cleanup — streamlined to three focused tabs: Project, Chapters, and Menus', 'Removed the Video Import, Audio, Subtitles, and Extras tabs (videos now auto-detect their embedded audio/subtitle/chapter tracks when added on the Project tab)', 'Removed the non-functional legacy Menu Design tab (its menu image was never used by the build); the Menus tab is the IG menu system', 'Title-bar version is now read dynamically from the app, so it can never go stale again', 'Tightened the sidebar (removed the duplicate disc-contents summary and capacity card) and tab bar'] },
     { v:'1.15.0', notes:['Full-screen disc menu preview in the Menus tab — a 16:9 TV-style preview of the actual menu', 'Retail-quality redesign of all built-in menu templates'] },
     { v:'1.11.0', notes:['Autoplay-only is now the default — discs build without menus by default for maximum hardware compatibility', 'Menus available as opt-in beta: enable "Menus (Beta)" in Project Settings to access menu design and interactive episode menus', 'Known compatibility issues on some players remain; v1.10.x menu fixes are all preserved on the beta path', 'Menu tab is hidden when menus are disabled; re-enable to access full menu builder', 'v1.10.12+ session will continue menu fix work in parallel'] },
@@ -3131,14 +3141,17 @@ function aboutModalHTML() {
     '<div style="text-align:center;margin-bottom:16px">' +
     '<div style="font-size:40px;margin-bottom:6px">💿</div>' +
     '<div class="modal-title" style="font-size:20px">Disc Forge</div>' +
-    '<div style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:4px">Version 1.11.0</div>' +
-    '<div style="font-size:11px;color:var(--text-tertiary)">Disc Forge v1.11.0 — Autoplay Blu-ray authoring with experimental menu support</div>' +
+    // Version is read from the app (like the titlebar since v1.15.1) so this
+    // headline can never go stale again — it sat at "1.11.0" for ten releases.
+    '<div style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:4px">Version ' + esc(state.appVersion || '—') + '</div>' +
+    '<div style="font-size:11px;color:var(--text-tertiary)">Professional Blu-ray authoring for macOS</div>' +
     '</div>' +
     '<div style="max-height:320px;overflow-y:auto;border-top:1px solid var(--border-dim);border-bottom:1px solid var(--border-dim);padding:12px 0;margin-bottom:14px">' +
     '<div style="font-size:10px;letter-spacing:.1em;color:var(--text-tertiary);margin-bottom:10px;text-align:center">VERSION HISTORY</div>' +
     vHTML +
+    '<div style="font-size:10px;color:var(--text-tertiary);text-align:center;padding-top:8px">Full history: CHANGELOG.md in the GitHub repository</div>' +
     '</div>' +
-    '<div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:6px">Powered by FFmpeg · tsMuxeR · hdiutil</div>' +
+    '<div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:6px">Powered by FFmpeg · tsMuxeR · growisofs · xorriso</div>' +
     '<div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:14px">Copyright © 2026 ETHM</div>' +
     '<div style="text-align:center;margin-bottom:14px"><a id="kofi-link" class="kofi-link" href="#">Support Disc Forge ☕</a></div>' +
     '<div class="modal-actions"><button class="btn btn-ghost" id="close-about">Close</button></div>' +
