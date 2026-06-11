@@ -5,12 +5,19 @@ let _focusedPos = null;  // cursor position
 let _renderTimer = null;
 
 function scheduleRender() {
-  // Batch rapid state changes into a single render
+  // Batch rapid state changes (per-keystroke text input) into a single render.
+  // Focus/caret are captured HERE — at render time, after every batched
+  // keystroke — and restored by attachListeners(), the same restore path the
+  // old synchronous flow used; capture-at-render is strictly more accurate.
   clearTimeout(_renderTimer);
   _renderTimer = setTimeout(() => {
     const activeEl = document.activeElement;
     if (activeEl && activeEl.id) {
       _focusedId  = activeEl.id;
+      _focusedPos = activeEl.selectionStart ?? null;
+    } else if (activeEl && activeEl.classList && activeEl.classList.contains('ig-label-input')) {
+      // ig-label-input rows carry data-idx instead of an id.
+      _focusedId  = '__iglabel:' + activeEl.dataset.idx;
       _focusedPos = activeEl.selectionStart ?? null;
     }
     render();
@@ -245,24 +252,21 @@ let state = {
 function uid()      { return Math.random().toString(36).slice(2,9); }
 function setState(p){
   Object.assign(state, p);
-  // Renders synchronously on every state change — including each keystroke in
-  // text fields (setPrjText preserves focus/caret across the rebuild). NOTE:
-  // scheduleRender() above would batch rapid changes but is currently unused;
-  // wiring it into the text-input path is a deliberate behavior change, not a
-  // drive-by fix.
+  // Renders synchronously: tab switches, checkboxes, button clicks must
+  // respond immediately. TEXT input goes through setPrjText/setPrjBatched
+  // instead, which batch per-keystroke renders via scheduleRender().
   render();
 }
 function setPrj(p)  { setState({ project: { ...state.project, ...p } }); }
+// Text-input path (A1): state updates synchronously on every keystroke, but
+// the DOM rebuild is batched to the end of the tick via scheduleRender(),
+// which captures focus/caret right before rendering — same restore mechanism
+// as before (attachListeners), captured later and therefore more accurately.
 function setPrjText(p) {
-  // Used for text inputs — saves focus before re-render
-  const activeEl = document.activeElement;
-  if (activeEl && activeEl.id) {
-    _focusedId  = activeEl.id;
-    _focusedPos = activeEl.selectionStart ?? null;
-  }
   Object.assign(state, { project: { ...state.project, ...p } });
-  render();
+  scheduleRender();
 }
+const setPrjBatched = setPrjText;
 function setForm(t,p){ setState({ form: { ...state.form, [t]: { ...state.form[t], ...p } } }); }
 function esc(s)     { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
@@ -3193,8 +3197,11 @@ async function loadRecentProject(filePath) {
 function attachListeners() {
   // Restore focus to previously focused input after re-render
   if (_focusedId) {
-    // Check for title-label-input by data-title-id
+    // Check for title-label-input by data-title-id / ig-label-input by data-idx
     let el = document.getElementById(_focusedId);
+    if (!el && _focusedId.startsWith('__iglabel:')) {
+      el = document.querySelector('.ig-label-input[data-idx="' + _focusedId.slice('__iglabel:'.length) + '"]');
+    }
     if (!el) {
       el = document.querySelector('[data-title-id="' + _focusedId + '"]');
     }
@@ -3239,7 +3246,10 @@ function attachListeners() {
       const idx = parseInt(e.target.dataset.idx, 10);
       const labels = [...(state.project.igMenuConfig?.buttonLabels || [])];
       labels[idx] = e.target.value;
-      setPrj({ igMenuConfig: { ...state.project.igMenuConfig, buttonLabels: labels } });
+      // Batched (A1): per-keystroke renders also LOST focus here before —
+      // these inputs have no id, so the old capture missed them entirely;
+      // scheduleRender's data-idx capture fixes that too.
+      setPrjBatched({ igMenuConfig: { ...state.project.igMenuConfig, buttonLabels: labels } });
     });
   });
 
