@@ -187,7 +187,7 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
           resolve({ success: true });
         } else {
           const msg = stderr.trim() || stdout.trim() || `growisofs exited with code ${code}`;
-          resolve({ success: false, error: msg });
+          resolve({ success: false, error: friendlyBurnError(msg) });
         }
       });
     };
@@ -222,6 +222,30 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
   });
 }
 
+// Known growisofs failure patterns → user-readable messages. The raw output
+// stays appended for diagnostics (the burn modal renders it in a <pre>).
+const BURN_ERROR_PATTERNS = [
+  [/unable to open.*busy/i, 'The disc drive is busy. Eject any disc and try again.'],
+  [/does not look like.*blank|media is not blank/i, 'The disc is not blank. Use a blank BD-R or an erased BD-RE.'],
+  [/calibration area (almost )?full/i, 'The disc has too many write sessions. Use a fresh disc.'],
+  [/no space left/i, 'The disc is full. Use a larger disc or reduce content.'],
+  [/unable to umount/i, 'Could not unmount the disc. Try ejecting and reinserting it.'],
+];
+
+/**
+ * Map a raw growisofs failure to a friendly message, keeping the raw text
+ * appended for diagnostics. Unrecognized errors pass through unchanged.
+ * @param {string} raw - growisofs stderr/stdout tail
+ * @returns {string}
+ */
+function friendlyBurnError(raw) {
+  const s = String(raw || '');
+  for (const [re, msg] of BURN_ERROR_PATTERNS) {
+    if (re.test(s)) return `${msg}\n\nDetails: ${s}`;
+  }
+  return s;
+}
+
 /**
  * Eject the optical disc via `drutil eject`. Never throws — always resolves
  * { success, error? }. Used by the burn-success modal's Eject button (the burn
@@ -252,4 +276,4 @@ function ejectDisc({ execFileFn } = {}) {
   });
 }
 
-module.exports = { checkBurner, burnDisc, ejectDisc, parseBurnProgress, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
+module.exports = { checkBurner, burnDisc, ejectDisc, parseBurnProgress, friendlyBurnError, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };

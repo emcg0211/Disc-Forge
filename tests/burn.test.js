@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { EventEmitter } = require('events');
 
-const { checkBurner, burnDisc, ejectDisc, parseBurnProgress, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
+const { checkBurner, burnDisc, ejectDisc, parseBurnProgress, friendlyBurnError, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -192,6 +192,43 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     assertEq(noDev.success, false, 'no deviceNode → success:false');
 
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // ── 3e: friendly burn error mapping ──────────────────────────────────────────────
+  console.log('\n=== 3e: friendlyBurnError ===');
+  {
+    const cases = [
+      [':-( unable to open /dev/disk9: device busy', /drive is busy/i],
+      [':-( media is not blank, aborting', /not blank/i],
+      [":-( /dev/disk9 doesn't look like it's blank", /not blank/i],
+      [':-( calibration area almost full, use a new disc', /too many write sessions/i],
+      [':-( write failed: no space left on device', /disc is full/i],
+      [':-( unable to umount /Volumes/DISC: Block device required', /ejecting and reinserting/i],
+    ];
+    for (const [raw, want] of cases) {
+      const out = friendlyBurnError(raw);
+      assert(want.test(out), `maps: ${raw.slice(0, 44)}…`);
+      assert(out.includes(raw), 'raw text kept for diagnostics');
+    }
+    const unknown = friendlyBurnError('some novel growisofs failure');
+    assertEq(unknown, 'some novel growisofs failure', 'unknown errors pass through unchanged');
+
+    // End-to-end: a failing burn surfaces the FRIENDLY message.
+    const r = await burnDisc({
+      isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountFn: okUnmount,
+      spawnFn: (() => {
+        return () => {
+          const proc = new EventEmitter();
+          proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+          setImmediate(() => {
+            proc.stderr.emit('data', Buffer.from(':-( media is not blank, aborting\n'));
+            proc.emit('close', 1);
+          });
+          return proc;
+        };
+      })(),
+    });
+    assert(/not blank/i.test(r.error) && /Use a blank BD-R/.test(r.error), 'burnDisc failure returns the mapped message');
   }
 
   // ── 3d: ejectDisc (drutil eject, seam-injected) ─────────────────────────────────
