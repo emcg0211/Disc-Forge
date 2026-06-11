@@ -139,6 +139,32 @@ function mergeProjectWithDefaults(loaded, defaults) {
   return out;
 }
 
+// ── In-app dialogs ──────────────────────────────────────────────────────────────
+// Replace native alert()/confirm(): those block the renderer process and look
+// foreign next to the app's modal system. showInfo = message + OK;
+// showConfirm = message + Cancel/OK, OK runs the callback. The callback lives
+// in a module variable (not state) because state must stay JSON-ish.
+let _dialogOnConfirm = null;
+function showInfo(message, title = 'Disc Forge') {
+  _dialogOnConfirm = null;
+  setState({ appDialog: { kind: 'info', title, message } });
+}
+function showConfirm(message, onConfirm, { title = 'Are you sure?', confirmLabel = 'OK' } = {}) {
+  _dialogOnConfirm = onConfirm;
+  setState({ appDialog: { kind: 'confirm', title, message, confirmLabel } });
+}
+function appDialogHTML() {
+  const d = state.appDialog;
+  if (!d) return '';
+  return `<div class="modal-backdrop"><div class="modal-box">
+    <div class="modal-title">${esc(d.title)}</div>
+    <div class="modal-sub" style="white-space:pre-wrap">${esc(d.message)}</div>
+    <div class="modal-actions">
+      ${d.kind === 'confirm' ? '<button class="btn btn-ghost" id="app-dialog-cancel">Cancel</button>' : ''}
+      <button class="btn btn-primary" id="app-dialog-ok">${esc(d.confirmLabel || 'OK')}</button>
+    </div></div></div>`;
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
   tab: 'project',
@@ -357,8 +383,8 @@ const rmChapter  = id => setPrj({ chapters:       state.project.chapters.filter(
 async function generateChapterThumbnails() {
   const p = state.project;
   const videoPath = p.mainVideo?.path || (p.titles && p.titles[0]?.file?.path);
-  if (!videoPath) { alert('Please add a video file first.'); return; }
-  if (p.chapters.length === 0) { alert('No chapters defined.'); return; }
+  if (!videoPath) { showInfo('Please add a video file first.'); return; }
+  if (p.chapters.length === 0) { showInfo('No chapters defined.'); return; }
 
   const homeDir = await window.discForge.getHomeDir();
   const thumbDir = homeDir + '/.discforge_thumbs';
@@ -399,13 +425,20 @@ async function startBuild() {
   estBytes = Math.round(estBytes * 1.1);
   const estGb = (estBytes / 1e9).toFixed(1);
   if (estBytes > BD50_BYTES) {
-    const ok = confirm(`⚠ Estimated disc size (~${estGb} GB) exceeds BD-50 capacity (46.6 GB).\n\nConsider splitting into multiple discs. Continue anyway?`);
-    if (!ok) return;
+    showConfirm(`⚠ Estimated disc size (~${estGb} GB) exceeds BD-50 capacity (46.6 GB).\n\nConsider splitting into multiple discs. Continue anyway?`,
+      () => _startBuildNow(p), { title: 'Disc Capacity Warning', confirmLabel: 'Continue Anyway' });
+    return;
   } else if (estBytes > BD25_BYTES && (p.discSize === 'BD-25' || !p.discSize)) {
-    const ok = confirm(`⚠ Estimated disc size (~${estGb} GB) exceeds BD-25 capacity (23.3 GB).\n\nTip: Switch to BD-50 in the sidebar, or split into multiple discs. Continue anyway?`);
-    if (!ok) return;
+    showConfirm(`⚠ Estimated disc size (~${estGb} GB) exceeds BD-25 capacity (23.3 GB).\n\nTip: Switch to BD-50 in the sidebar, or split into multiple discs. Continue anyway?`,
+      () => _startBuildNow(p), { title: 'Disc Capacity Warning', confirmLabel: 'Continue Anyway' });
+    return;
   }
+  return _startBuildNow(p);
+}
 
+// The build proper — runs after startBuild's capacity gate (directly, or from
+// the in-app confirm dialog's callback when the estimate exceeds capacity).
+async function _startBuildNow(p) {
   const additionalTitles = p.titles || [];
   const steps = [
     'Muxing main feature audio tracks', 'Validating mux output',
@@ -1604,7 +1637,7 @@ async function confirmNameModal() {
     // Save As: persists the current (edited) draft under a new, unique name.
     r = await window.discForge.templateSaveAs(state.templateEditor.draft, name);
   }
-  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); render(); return; }
+  if (!r || !r.ok) { showInfo('Could not save: ' + (r && r.error)); render(); return; }
   await loadTemplates();
   await selectTemplate(r.id);
 }
@@ -1628,7 +1661,7 @@ async function saveTemplate() {
   const ed = state.templateEditor;
   if (!ed.draft || isReadonly(ed.selectedId)) return;
   const r = await window.discForge.templateSave(ed.draft);
-  if (!r || !r.ok) { window.alert('Could not save: ' + (r && r.error)); return; }
+  if (!r || !r.ok) { showInfo('Could not save: ' + (r && r.error)); return; }
   invalidateThumb(r.id);          // the saved look changed → re-render its thumbnail
   await loadTemplates();
   await selectTemplate(r.id);     // re-reads from disk → baseline reset, dirty cleared
@@ -1648,17 +1681,17 @@ function revertTemplate() {
   render();
   refreshPreviews();
 }
-async function deleteTemplate() {
+function deleteTemplate() {
   const ed = state.templateEditor;
   if (isReadonly(ed.selectedId)) return;
   const meta = templateMeta(ed.selectedId);
-  // Native Electron confirm dialog.
-  if (!window.confirm(`Delete the template “${meta ? meta.name : ed.selectedId}”? This cannot be undone.`)) return;
-  const r = await window.discForge.templateDelete(ed.selectedId);
-  if (!r || !r.ok) { window.alert('Could not delete: ' + (r && r.error)); return; }
-  await loadTemplates();  // loadTemplates re-selects a valid template (first built-in)
-  state.templateEditor.selectedId = 'classic';
-  await selectTemplate('classic');
+  showConfirm(`Delete the template “${meta ? meta.name : ed.selectedId}”? This cannot be undone.`, async () => {
+    const r = await window.discForge.templateDelete(ed.selectedId);
+    if (!r || !r.ok) { showInfo('Could not delete: ' + (r && r.error)); return; }
+    await loadTemplates();  // loadTemplates re-selects a valid template (first built-in)
+    state.templateEditor.selectedId = 'classic';
+    await selectTemplate('classic');
+  }, { title: 'Delete Template', confirmLabel: 'Delete' });
 }
 
 // Dropdown <option>s for the build flow + editor list.
@@ -2255,6 +2288,7 @@ function buildHTML() {
     ${state.showWelcome ? welcomeModalHTML() : ''}
     ${state.showAbout ? aboutModalHTML() : ''}
     ${state.templateEditor.nameModal != null ? nameModalHTML() : ''}
+    ${state.appDialog ? appDialogHTML() : ''}
   `;
 }
 
@@ -3067,7 +3101,7 @@ async function saveProject() {
   const json = JSON.stringify(proj, null, 2);
   const savePath = await window.discForge.saveProjectFile(json);
   if (savePath) {
-    alert('Project saved to: ' + savePath);
+    showInfo('Project saved to: ' + savePath, 'Project Saved');
   }
 }
 
@@ -3079,7 +3113,7 @@ async function loadProject() {
     if (proj.schemaVersion === undefined) {
       console.warn('Loading a pre-versioned (v0) project file — missing fields get defaults.');
     } else if (proj.schemaVersion > PROJECT_SCHEMA_VERSION) {
-      alert('This project was created with a newer version of Disc Forge. Some settings may not load correctly.');
+      showInfo('This project was created with a newer version of Disc Forge. Some settings may not load correctly.');
     }
     state.embeddedTracks = proj.embeddedTracks || [];
     // Merge over the full defaults so every field exists (never undefined),
@@ -3089,7 +3123,7 @@ async function loadProject() {
     merged.videoFormat = VIDEO_FMTS.find(f => f === merged.videoFormat) || VIDEO_FMTS[0];
     setPrj(merged);
   } catch(e) {
-    alert('Failed to load project: ' + e.message);
+    showInfo('Failed to load project: ' + e.message);
   }
 }
 
@@ -3177,7 +3211,11 @@ function attachListeners() {
     el.addEventListener('click', () => {
       const p = TPL_PRESETS.find(x => x.id === el.dataset.preset);
       if (!p) return;
-      if (isDirty() && !window.confirm(`Apply the "${p.name}" preset? This overwrites your current unsaved changes.`)) return;
+      if (isDirty()) {
+        showConfirm(`Apply the "${p.name}" preset? This overwrites your current unsaved changes.`,
+          () => applyPreset(p), { title: 'Apply Preset', confirmLabel: 'Apply' });
+        return;
+      }
       applyPreset(p);
     }));
 
@@ -3564,11 +3602,11 @@ function attachListeners() {
   document.getElementById('import-chapters-btn')?.addEventListener('click', async () => {
     const p = state.project;
     const videoPath = p.mainVideo?.path || (p.titles&&p.titles[0]?.file?.path);
-    if (!videoPath) { alert('Please add a video file first.'); return; }
+    if (!videoPath) { showInfo('Please add a video file first.'); return; }
     const probe = await window.discForge.probeFile(videoPath);
-    if (!probe.success || !probe.data) { alert('Could not probe video file.'); return; }
+    if (!probe.success || !probe.data) { showInfo('Could not probe video file.'); return; }
     const chapters = probe.data.chapters || [];
-    if (chapters.length === 0) { alert('No chapter markers found in this video file.'); return; }
+    if (chapters.length === 0) { showInfo('No chapter markers found in this video file.'); return; }
     const newChapters = chapters.map((ch, idx) => {
       const startSec = parseFloat(ch.start_time || 0);
       const h = Math.floor(startSec / 3600);
@@ -3579,11 +3617,11 @@ function attachListeners() {
       return { id: uid(), name, time };
     });
     setPrj({ chapters: newChapters });
-    alert('Imported ' + newChapters.length + ' chapters!');
+    showInfo('Imported ' + newChapters.length + ' chapters!');
   });
   document.getElementById('gen-thumbs-btn')?.addEventListener('click', generateChapterThumbnails);
   document.getElementById('clear-chapters-btn')?.addEventListener('click', () => {
-    if (confirm('Clear all chapters?')) setPrj({ chapters: [] });
+    showConfirm('Clear all chapters?', () => setPrj({ chapters: [] }), { title: 'Clear Chapters', confirmLabel: 'Clear' });
   });
 
   document.getElementById('close-modal')?.addEventListener('click', closeBuildModal);
@@ -3612,30 +3650,29 @@ function attachListeners() {
     let burner = null;
     try { burner = await window.discForge.checkBurner(); } catch (_) { burner = { found: false }; }
     if (!burner || !burner.found) {
-      alert('No disc burner detected.\n\nConnect a Blu-ray burner and try again.');
+      showInfo('No disc burner detected.\n\nConnect a Blu-ray burner and try again.');
       return;
     }
 
     // 2. Confirm — burning overwrites any disc in the drive. Cancel = escape.
-    const ok = confirm('Insert a blank BD-R disc, then click OK to Burn.\n\nThis will overwrite any disc in the drive.');
-    if (!ok) return;
+    showConfirm('Insert a blank BD-R disc, then click Burn.\n\nThis will overwrite any disc in the drive.', async () => {
+      // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
+      //    node resolved by checkBurner (e.g. /dev/disk9) through to the burn handler.
+      window.discForge.removeAllListeners('burn-progress');
+      setState({
+        burning: true, burnStatus: 'starting', burnMessage: 'Preparing to burn…',
+        burnDone: false, burnError: null, burnPercent: 0,
+        burnDriveInfo: { drives: [{ name: burner.name || 'Optical Drive', isBDCapable: true }] },
+      });
 
-    // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
-    //    node resolved by checkBurner (e.g. /dev/disk9) through to the burn handler.
-    window.discForge.removeAllListeners('burn-progress');
-    setState({
-      burning: true, burnStatus: 'starting', burnMessage: 'Preparing to burn…',
-      burnDone: false, burnError: null, burnPercent: 0,
-      burnDriveInfo: { drives: [{ name: burner.name || 'Optical Drive', isBDCapable: true }] },
-    });
-
-    window.discForge.onBurnProgress(data => {
-      if (data.status === 'done') setState({ burnDone: true, burnStatus: 'done', burnMessage: data.message, burnPercent: 100 });
-      else if (data.status === 'error') setState({ burning: true, burnError: data.message });
-      else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
-    });
-    const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode });
-    if (result && result.error) setState({ burning: true, burnError: result.error });
+      window.discForge.onBurnProgress(data => {
+        if (data.status === 'done') setState({ burnDone: true, burnStatus: 'done', burnMessage: data.message, burnPercent: 100 });
+        else if (data.status === 'error') setState({ burning: true, burnError: data.message });
+        else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
+      });
+      const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode });
+      if (result && result.error) setState({ burning: true, burnError: result.error });
+    }, { title: 'Burn to Disc', confirmLabel: 'Burn' });
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {
     window.discForge.removeAllListeners('burn-progress');
@@ -3648,6 +3685,18 @@ function attachListeners() {
   });
   document.getElementById('reveal-iso')?.addEventListener('click', revealISO);
   document.getElementById('preview-vlc')?.addEventListener('click', previewInVLC);
+
+  // In-app dialog (showInfo / showConfirm)
+  document.getElementById('app-dialog-ok')?.addEventListener('click', () => {
+    const fn = _dialogOnConfirm;
+    _dialogOnConfirm = null;
+    setState({ appDialog: null });
+    if (fn) fn();
+  });
+  document.getElementById('app-dialog-cancel')?.addEventListener('click', () => {
+    _dialogOnConfirm = null;
+    setState({ appDialog: null });
+  });
 
   // ── v1.19.0 menu switcher (Main Menu / Chapter Select) above the TV bezel ──
   document.querySelectorAll('.menu-switch-btn').forEach(btn => {
