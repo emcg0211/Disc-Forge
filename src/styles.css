@@ -907,6 +907,16 @@ input[type=checkbox] {
   transition: width 0.5s cubic-bezier(0.4,0,0.2,1);
   box-shadow: 0 0 8px rgba(219,184,90,0.5);
 }
+/* Indeterminate sweep — used while checking/erasing the disc, where no
+   meaningful percentage exists. */
+.progress-indeterminate {
+  width: 35%;
+  animation: indeterminateSweep 1.4s ease-in-out infinite;
+}
+@keyframes indeterminateSweep {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
 
 /* FFmpeg log */
 .ffmpeg-log {

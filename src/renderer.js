@@ -3023,11 +3023,16 @@ function burnModalHTML() {
     <div class="modal-sub">Do not eject the disc or close the app.</div>
     ${drivePanel}
     <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-tertiary);margin-bottom:4px">
-      <span>${burnStatus === 'starting' ? 'Preparing...' : burnStatus === 'burning' ? 'Writing...' : 'Finalizing...'}</span>
+      <span>${burnStatus === 'starting' ? 'Preparing...'
+            : burnStatus === 'checking' ? 'Checking disc...'
+            : burnStatus === 'erasing' ? 'Erasing disc (about a minute)...'
+            : burnStatus === 'burning' ? 'Writing...' : 'Finalizing...'}</span>
       <span>${pctLabel}</span>
     </div>
     <div class="progress-bar-wrap" style="margin-bottom:12px">
-      <div class="progress-bar-fill" style="width:${pct}%;transition:width 0.5s ease"></div>
+      ${(burnStatus === 'checking' || burnStatus === 'erasing') && burnPercent == null
+        ? '<div class="progress-bar-fill progress-indeterminate"></div>'
+        : `<div class="progress-bar-fill" style="width:${pct}%;transition:width 0.5s ease"></div>`}
     </div>
     <div class="ffmpeg-log" style="text-align:left;max-height:80px;overflow-y:auto">${esc(burnMessage||'Preparing...')}</div>
   </div></div>`;
@@ -3765,12 +3770,11 @@ function attachListeners() {
       return;
     }
 
-    // 2. Confirm — burning overwrites any disc in the drive. Cancel = escape.
-    //    The checkbox opts into post-burn verification (default OFF — the
-    //    fast path is unchanged); `verify` arrives as the callback arg.
-    showConfirm('Insert a blank BD-R disc, then click Burn.\n\nThis will overwrite any disc in the drive.', async (verify) => {
-      // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
-      //    node resolved by checkBurner (e.g. /dev/disk9) through to the burn handler.
+    // 3. Burn via growisofs (never auto-verify or auto-eject). Pass the device
+    //    node resolved by checkBurner through to the burn handler. erase:true
+    //    is the user-approved erase-and-burn path for a used BD-RE — the
+    //    handler erases, re-resolves the device node, then burns.
+    const beginBurn = async (verify, erase) => {
       window.discForge.removeAllListeners('burn-progress');
       setState({
         burning: true, burnStatus: 'starting', burnMessage: 'Preparing to burn…',
@@ -3781,12 +3785,33 @@ function attachListeners() {
       window.discForge.onBurnProgress(data => {
         if (data.status === 'done') setState({ burnDone: true, burnStatus: 'done', burnMessage: data.message, burnPercent: 100 });
         else if (data.status === 'error') setState({ burning: true, burnError: data.message });
-        else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : state.burnPercent });
+        // checking/erasing carry no meaningful percent — null drives the
+        // indeterminate bar; 'burning' resumes real percent tracking.
+        else if (data.status === 'checking' || data.status === 'erasing') setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: null });
+        else setState({ burnStatus: data.status, burnMessage: data.message, burnPercent: data.percent != null ? data.percent : (state.burnPercent == null ? 0 : state.burnPercent) });
       });
-      const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode, verify });
+      const result = await window.discForge.burnDisc({ isoPath: state.builtIsoPath, deviceNode: burner.deviceNode, verify, erase });
+      if (result && result.needsErase) {
+        // Used rewritable disc: nothing burned yet. Confirm destruction, then
+        // re-invoke with erase:true.
+        setState({ burning: false, burnStatus: null, burnMessage: '' });
+        showConfirm(
+          'This disc already has data on it.\n\nErase and burn? (Erasing takes about a minute and destroys the disc’s contents.)',
+          () => beginBurn(verify, true),
+          { title: 'Disc Not Blank', confirmLabel: 'Erase & Burn' },
+        );
+        return;
+      }
       if (result && result.error) setState({ burning: true, burnError: result.error });
-    }, { title: 'Burn to Disc', confirmLabel: 'Burn',
-         checkboxLabel: 'Verify after burn (reads the disc start back — adds about a minute)' });
+    };
+
+    // 2. Confirm — burning overwrites any disc in the drive. Cancel = escape.
+    //    The checkbox opts into post-burn verification (default OFF — the
+    //    fast path is unchanged); `verify` arrives as the callback arg.
+    showConfirm('Insert a blank BD-R disc, then click Burn.\n\nThis will overwrite any disc in the drive.',
+      (verify) => beginBurn(verify, false),
+      { title: 'Burn to Disc', confirmLabel: 'Burn',
+        checkboxLabel: 'Verify after burn (reads the disc start back — adds about a minute)' });
   });
   document.getElementById('close-burn-modal')?.addEventListener('click', () => {
     window.discForge.removeAllListeners('burn-progress');

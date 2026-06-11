@@ -99,6 +99,88 @@ function checkBurner({ exec, execDrutil } = {}) {
 }
 
 /**
+ * Inspect the inserted media via `drutil status`.
+ *
+ * Parsed from drutil's human output (the only interface macOS gives us):
+ *   - "Type: BD-RE        Name: /dev/disk4"  → mediaType + deviceNode
+ *   - "Type: No Media Inserted"              → hasMedia: false
+ *   - the word "blank" appears only for blank media (e.g.
+ *     "Overwrite: 23.30GB blank, appendable, overwritable"); a used disc
+ *     reports space-free numbers without it.
+ *
+ * Never throws. A failed/absent drutil yields hasMedia:false so callers fall
+ * back to the plain burn path (growisofs then reports any real problem).
+ *
+ * @param {object}   [opts]
+ * @param {function} [opts.execFileFn] - test seam: (bin, args, opts, cb) → cb(err, stdout, stderr)
+ * @returns {Promise<{hasMedia:boolean, mediaType:string|null, isBlank:boolean|null, deviceNode:string|null}>}
+ */
+function checkMediaStatus({ execFileFn } = {}) {
+  return new Promise((resolve) => {
+    const run = execFileFn || ((bin, args, opts, cb) => {
+      try {
+        const proc = execFile(bin, args, opts, (err, stdout, stderr) => cb(err, stdout, stderr));
+        proc.on('error', (e) => cb(e, '', ''));
+      } catch (e) { cb(e, '', ''); }
+    });
+    let done = false;
+    run(DRUTIL, ['status'], { timeout: 15000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      if (done) return; done = true;
+      const out = String(stdout || '');
+      if (err || !out.trim()) return resolve({ hasMedia: false, mediaType: null, isBlank: null, deviceNode: null });
+
+      const typeMatch = out.match(/^\s*Type:\s*(.+?)(?:\s{2,}.*)?$/m);
+      const rawType = typeMatch ? typeMatch[1].trim() : null;
+      if (!rawType || /no media/i.test(rawType)) {
+        return resolve({ hasMedia: false, mediaType: null, isBlank: null, deviceNode: null });
+      }
+      const nodeMatch = out.match(/Name:\s*(\/dev\/r?disk\d+)/);
+      resolve({
+        hasMedia: true,
+        mediaType: rawType,
+        isBlank: /\bblank\b/i.test(out),
+        deviceNode: nodeMatch ? nodeMatch[1] : null,
+      });
+    });
+  });
+}
+
+/**
+ * Quick-erase the inserted disc via `drutil erase quick` (~1 minute on BD-RE).
+ * Never throws — resolves { success, error? }. NOTE: after an erase the
+ * burner's device node RE-ENUMERATES (observed on macOS: /dev/disk4 ceased to
+ * exist) — callers must re-resolve the node before burning; see
+ * burnWithMediaCheck.
+ *
+ * @param {object}   [opts]
+ * @param {function} [opts.execFileFn] - test seam (same shape as checkMediaStatus)
+ * @param {function} [opts.onLog]      - status line stream
+ * @returns {Promise<{success:boolean, error?:string}>}
+ */
+function eraseDisc({ execFileFn, onLog = () => {} } = {}) {
+  return new Promise((resolve) => {
+    try { onLog('Erasing disc… (quick erase, about a minute on BD-RE)'); } catch {}
+    const run = execFileFn || ((bin, args, opts, cb) => {
+      try {
+        const proc = execFile(bin, args, opts, (err, stdout, stderr) => cb(err, stdout, stderr));
+        proc.on('error', (e) => cb(e, '', ''));
+      } catch (e) { cb(e, '', ''); }
+    });
+    let done = false;
+    run(DRUTIL, ['erase', 'quick'], { timeout: 5 * 60 * 1000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+      if (done) return; done = true;
+      if (err) {
+        const detail = String(stderr || stdout || err.message || '').trim();
+        resolve({ success: false, error: `Could not erase the disc: ${detail || 'unknown error'}` });
+      } else {
+        try { onLog('Erase complete.'); } catch {}
+        resolve({ success: true });
+      }
+    });
+  });
+}
+
+/**
  * Parse a burn progress percentage out of one growisofs output line.
  *
  * growisofs reports progress in two formats:
@@ -143,7 +225,7 @@ function parseBurnProgress(line) {
  *                                          the real call.
  * @returns {Promise<{success:boolean, error?:string}>}
  */
-function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, onProgress = () => {}, spawnFn, unmountFn } = {}) {
+function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () => {}, onProgress = () => {}, spawnFn, unmountFn, unmountRetryDelayMs = 500 } = {}) {
   return new Promise((resolve) => {
     if (!isoPath || !fs.existsSync(isoPath)) {
       return resolve({ success: false, error: `ISO file not found: ${isoPath || '(none)'}` });
@@ -192,12 +274,16 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
       });
     };
 
-    // Pre-burn unmount, BEST-EFFORT. macOS auto-mounts any disc with a readable
-    // filesystem (a previously burned BD-RE), and growisofs refuses to write to
-    // a mounted volume — its internal unmount fails on macOS (":-( unable to
-    // umount: Block device required") and aborts the burn. A blank/erased disc
-    // has nothing mounted, so diskutil errors there — that must NEVER block the
-    // burn: failures are logged and the burn proceeds regardless.
+    // Pre-burn unmount, BEST-EFFORT with retries. macOS auto-mounts any disc
+    // with a readable filesystem (a previously burned BD-RE), and growisofs
+    // refuses to write to a mounted volume — its internal unmount fails on
+    // macOS (":-( unable to umount: Block device required") and aborts the
+    // burn. Worse, diskarbitrationd RE-MOUNTS the disc within ~1s of a
+    // successful unmountDisk (observed 2026-06-11), so a successful attempt
+    // must be followed by spawning growisofs IMMEDIATELY — same tick, no
+    // intermediate awaits. Failures retry up to 5× (the disc may be busy
+    // mid-automount); a blank/erased disc has nothing mounted so its failures
+    // stay best-effort: log and burn anyway.
     const doUnmount = unmountFn || ((dev, cb) => {
       let called = false;
       const finish = (err, output) => { if (!called) { called = true; cb(err, output); } };
@@ -211,20 +297,35 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
       } catch (e) { finish(e, ''); }
     });
 
-    doUnmount(deviceNode, (err, output) => {
-      const note = String(output || (err && err.message) || '').trim().split('\n')[0];
-      try {
-        if (err) onLog(`unmount ${deviceNode} failed (${note || 'nothing mounted'}) — continuing with burn`);
-        else if (note) onLog(note);
-      } catch {}
-      startBurn();
-    });
+    const MAX_UNMOUNT_ATTEMPTS = 5;
+    const attemptUnmount = (attempt) => {
+      doUnmount(deviceNode, (err, output) => {
+        const note = String(output || (err && err.message) || '').trim().split('\n')[0];
+        if (!err) {
+          try { if (note) onLog(note); } catch {}
+          // Success — race diskarbitrationd: growisofs must spawn NOW.
+          return startBurn();
+        }
+        if (attempt < MAX_UNMOUNT_ATTEMPTS) {
+          try { onLog(`unmount ${deviceNode} attempt ${attempt}/${MAX_UNMOUNT_ATTEMPTS} failed (${note || 'busy'}) — retrying`); } catch {}
+          return setTimeout(() => attemptUnmount(attempt + 1), unmountRetryDelayMs);
+        }
+        try { onLog(`unmount ${deviceNode} failed after ${MAX_UNMOUNT_ATTEMPTS} attempts (${note || 'nothing mounted'}) — continuing with burn`); } catch {}
+        startBurn();
+      });
+    };
+    attemptUnmount(1);
   });
 }
 
 // Known growisofs failure patterns → user-readable messages. The raw output
 // stays appended for diagnostics (the burn modal renders it in a <pre>).
 const BURN_ERROR_PATTERNS = [
+  // Used disc: growisofs refuses to overwrite an existing filesystem.
+  [/already carries isofs/i, 'This disc already has data on it. For a BD-RE the app can erase and burn (try again and choose Erase & Burn); for a BD-R use a fresh blank disc.'],
+  // diskarbitrationd re-mounted the disc between our unmount and growisofs
+  // starting (the ~1s remount race). Must precede the generic umount pattern.
+  [/block device required/i, 'The disc re-mounted while the burn was starting. Try ejecting and reinserting it, then burn again.'],
   [/unable to open.*busy/i, 'The disc drive is busy. Eject any disc and try again.'],
   // growisofs prints "doesn't look like it's blank" (contraction), so match both forms.
   [/(does not|doesn'?t) look like.*blank|media is not blank/i, 'The disc is not blank. Use a blank BD-R or an erased BD-RE.'],
@@ -245,6 +346,68 @@ function friendlyBurnError(raw) {
     if (re.test(s)) return `${msg}\n\nDetails: ${s}`;
   }
   return s;
+}
+
+/**
+ * Burn with media awareness — the full reburn flow for used BD-RE media,
+ * automating the proven manual workflow (2026-06-11):
+ *   drutil erase quick → re-resolve the device node → burn.
+ *
+ * Flow:
+ *   1. checkMediaStatus. Non-blank + rewritable (BD-RE/RW) without
+ *      erase:true → resolve { needsErase:true, mediaType } WITHOUT burning
+ *      (the UI confirms destruction with the user, then re-invokes with
+ *      erase:true). Non-blank + write-once → friendly refusal.
+ *   2. With erase:true → eraseDisc, then RE-RESOLVE the device node via a
+ *      fresh drutil status — after an erase the burner re-enumerates
+ *      (observed: /dev/disk4 ceased to exist; the stale node fails with
+ *      ENOENT). The pre-erase node is never reused.
+ *   3. burnDisc to the (possibly new) node. On erased/blank media nothing is
+ *      mounted, so the unmount race cannot occur.
+ *
+ * A failed media CHECK never blocks: it falls through to the plain burn and
+ * growisofs reports any real problem.
+ *
+ * @param {object}   opts            - burnDisc opts plus:
+ * @param {boolean}  [opts.erase]    - user approved erasing non-blank rewritable media
+ * @param {function} [opts.onStage]  - stage callback: 'checking' | 'erasing' | 'burning'
+ * @param {function} [opts.execFileFn] - seam for drutil calls (checkMediaStatus/eraseDisc)
+ * @returns {Promise<{success:boolean, error?:string, needsErase?:boolean, mediaType?:string}>}
+ */
+async function burnWithMediaCheck({ isoPath, deviceNode, erase = false, onStage = () => {}, onLog = () => {}, onProgress, execFileFn, spawnFn, unmountFn, growisofsPath, unmountRetryDelayMs } = {}) {
+  try { onStage('checking'); } catch {}
+  const media = await checkMediaStatus({ execFileFn });
+  let targetNode = deviceNode || media.deviceNode;
+
+  if (media.hasMedia && media.isBlank === false) {
+    const rewritable = /(-RE\b|RW\b)/i.test(media.mediaType || '');
+    if (!rewritable) {
+      return {
+        success: false,
+        error: `This ${media.mediaType || 'disc'} already has data on it and is write-once — it cannot be erased. Insert a blank disc (or an erasable BD-RE) and try again.`,
+      };
+    }
+    if (!erase) {
+      return { success: false, needsErase: true, mediaType: media.mediaType };
+    }
+    try { onStage('erasing'); } catch {}
+    const erased = await eraseDisc({ execFileFn, onLog });
+    if (!erased.success) return { success: false, error: erased.error };
+
+    // The node from before the erase is DEAD — re-resolve from drutil.
+    const fresh = await checkMediaStatus({ execFileFn });
+    targetNode = fresh.deviceNode;
+    if (!targetNode) {
+      return { success: false, error: 'Erase finished, but the burner could not be re-detected. Eject and reinsert the disc, then burn again.' };
+    }
+    try { onLog(`device re-resolved after erase: ${targetNode}`); } catch {}
+  }
+
+  try { onStage('burning'); } catch {}
+  const result = await burnDisc({ isoPath, deviceNode: targetNode, onLog, onProgress, spawnFn, unmountFn, growisofsPath, unmountRetryDelayMs });
+  // Surface the node actually burned to (it changes across an erase) so
+  // callers — e.g. post-burn verification — never touch the stale one.
+  return { ...result, deviceNode: targetNode };
 }
 
 /**
@@ -331,4 +494,4 @@ function verifyBurn({ isoPath, deviceNode, execFileFn } = {}) {
   });
 }
 
-module.exports = { checkBurner, burnDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };
+module.exports = { checkBurner, burnDisc, burnWithMediaCheck, checkMediaStatus, eraseDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, SYSTEM_PROFILER, DRUTIL, DISKUTIL, GROWISOFS };

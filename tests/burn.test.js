@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { EventEmitter } = require('events');
 
-const { checkBurner, burnDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
+const { checkBurner, burnDisc, burnWithMediaCheck, checkMediaStatus, eraseDisc, ejectDisc, verifyBurn, parseBurnProgress, friendlyBurnError, DRUTIL } = require(path.join(__dirname, '..', 'src', 'lib', 'burn.js'));
 
 let passed = 0, failed = 0;
 function assert(cond, name, detail = '') {
@@ -230,6 +230,165 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
       });
       assert(/not blank/i.test(r2.error) && /Use a blank BD-R/.test(r2.error), 'burnDisc failure returns the mapped message');
     }
+
+    // ── 3g: reburn support — media status, erase, unmount retry, erase-and-burn ─────
+    console.log('\n=== 3g: erase-and-burn flow for used BD-RE media ===');
+    {
+      // drutil status fixtures (shape verified against real drutil output).
+      const STATUS_BLANK_BDRE = [
+        ' Vendor   Product           Rev ',
+        ' HL-DT-ST BD-RE  WH16NS40   1.05',
+        '',
+        '           Type: BD-RE                Name: /dev/disk4',
+        '   Write Speeds: 2x, 4x, 6x',
+        '      Overwrite:   23.30GB blank, appendable, overwritable',
+      ].join('\n');
+      const STATUS_USED_BDRE = [
+        ' Vendor   Product           Rev ',
+        ' HL-DT-ST BD-RE  WH16NS40   1.05',
+        '',
+        '           Type: BD-RE                Name: /dev/disk4',
+        '   Write Speeds: 2x, 4x, 6x',
+        '     Space Free: 0.00GB (0 blocks)    Book Type: BD-RE',
+      ].join('\n');
+      const STATUS_USED_BDR = STATUS_USED_BDRE.replace(/BD-RE {16}/, 'BD-R   ').replace('Book Type: BD-RE', 'Book Type: BD-R');
+      const STATUS_NO_MEDIA = [
+        ' Vendor   Product           Rev ',
+        ' HL-DT-ST BD-RE  WH16NS40   1.05',
+        '',
+        '           Type: No Media Inserted',
+      ].join('\n');
+      const drutilStub = (out) => (bin, args, opts, cb) => setImmediate(() => cb(null, out, ''));
+
+      // checkMediaStatus parsing
+      const blank = await checkMediaStatus({ execFileFn: drutilStub(STATUS_BLANK_BDRE) });
+      assertEq(blank.hasMedia, true, 'blank BD-RE: hasMedia');
+      assertEq(blank.mediaType, 'BD-RE', 'blank BD-RE: mediaType parsed');
+      assertEq(blank.isBlank, true, 'blank BD-RE: isBlank true');
+      assertEq(blank.deviceNode, '/dev/disk4', 'blank BD-RE: device node from Name:');
+
+      const used = await checkMediaStatus({ execFileFn: drutilStub(STATUS_USED_BDRE) });
+      assertEq(used.isBlank, false, 'used BD-RE: isBlank false (no "blank" indicator)');
+      assertEq(used.mediaType, 'BD-RE', 'used BD-RE: mediaType parsed');
+
+      const none = await checkMediaStatus({ execFileFn: drutilStub(STATUS_NO_MEDIA) });
+      assertEq(none.hasMedia, false, 'no media: hasMedia false');
+
+      const broken = await checkMediaStatus({ execFileFn: (b, a, o, cb) => setImmediate(() => cb(new Error('boom'), '', '')) });
+      assertEq(broken.hasMedia, false, 'drutil failure → hasMedia false (never throws)');
+
+      // eraseDisc
+      let eraseArgs = null;
+      const erOk = await eraseDisc({ execFileFn: (bin, args, opts, cb) => { eraseArgs = args; setImmediate(() => cb(null, '', '')); } });
+      assertEq(erOk.success, true, 'erase success');
+      assertEq(JSON.stringify(eraseArgs), JSON.stringify(['erase', 'quick']), 'uses drutil erase quick');
+      const erFail = await eraseDisc({ execFileFn: (b, a, o, cb) => setImmediate(() => cb(new Error('x'), '', 'erase failed: no media')) });
+      assertEq(erFail.success, false, 'erase failure → success:false');
+      assert(/no media/.test(erFail.error), 'erase stderr surfaced');
+
+      // unmount retry: fails 3×, succeeds on the 4th — growisofs still runs,
+      // and the spawn happens after the SUCCESSFUL unmount (order preserved).
+      {
+        const order = [];
+        let attempts = 0;
+        const r = await burnDisc({
+          isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountRetryDelayMs: 1,
+          unmountFn: (d, cb) => {
+            attempts++;
+            order.push('unmount' + attempts);
+            setImmediate(() => attempts < 4 ? cb(new Error('busy'), 'Resource busy') : cb(null, 'Unmount successful'));
+          },
+          spawnFn: (...a) => { order.push('growisofs'); return fakeSpawn(0)(...a); },
+        });
+        assertEq(r.success, true, 'retry flow: burn succeeds');
+        assertEq(attempts, 4, 'unmount retried until success (4 attempts)');
+        assertEq(order.join(','), 'unmount1,unmount2,unmount3,unmount4,growisofs',
+          'growisofs spawns only after the successful unmount attempt');
+      }
+      // all 5 attempts fail → still burns (best-effort blank-disc path)
+      {
+        let attempts = 0;
+        const r = await burnDisc({
+          isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountRetryDelayMs: 1,
+          unmountFn: (d, cb) => { attempts++; setImmediate(() => cb(new Error('nothing mounted'), '')); },
+          spawnFn: fakeSpawn(0, ['writing']),
+        });
+        assertEq(attempts, 5, 'unmount capped at 5 attempts');
+        assertEq(r.success, true, 'exhausted retries still proceed to burn (best-effort)');
+      }
+
+      // burnWithMediaCheck: non-blank BD-RE without erase → needsErase, NO growisofs
+      {
+        let spawned = false;
+        const r = await burnWithMediaCheck({
+          isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin,
+          execFileFn: drutilStub(STATUS_USED_BDRE),
+          spawnFn: () => { spawned = true; return fakeSpawn(0)(); },
+          unmountFn: okUnmount,
+        });
+        assertEq(r.needsErase, true, 'used BD-RE without erase → needsErase:true');
+        assertEq(r.mediaType, 'BD-RE', 'needsErase carries the media type');
+        assertEq(spawned, false, 'growisofs is NOT spawned for a needsErase response');
+      }
+      // non-blank write-once BD-R → friendly refusal, no erase, no burn
+      {
+        const r = await burnWithMediaCheck({
+          isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin,
+          execFileFn: drutilStub(STATUS_USED_BDR),
+          spawnFn: fakeSpawn(0), unmountFn: okUnmount,
+        });
+        assertEq(r.success, false, 'used BD-R → refused');
+        assert(/write-once|cannot be erased/i.test(r.error), 'BD-R refusal explains why');
+        assertEq(r.needsErase, undefined, 'BD-R never offers erase');
+      }
+      // erase:true flow — erases, RE-RESOLVES the node (changed after erase),
+      // burns to the NEW node, stages in order.
+      {
+        const STATUS_BLANK_NEWNODE = STATUS_BLANK_BDRE.replace('/dev/disk4', '/dev/disk6');
+        const calls = [];
+        const stages = [];
+        let statusCount = 0;
+        const seqExec = (bin, args, opts, cb) => {
+          calls.push(args.join(' '));
+          if (args[0] === 'status') {
+            statusCount++;
+            // 1st status: used disc on disk4; post-erase status: blank on disk6
+            return setImmediate(() => cb(null, statusCount === 1 ? STATUS_USED_BDRE : STATUS_BLANK_NEWNODE, ''));
+          }
+          return setImmediate(() => cb(null, '', ''));  // erase quick
+        };
+        let burnedTo = null;
+        const r = await burnWithMediaCheck({
+          isoPath: tmpIso, deviceNode: '/dev/disk4', erase: true, growisofsPath: fakeBin,
+          execFileFn: seqExec, unmountFn: okUnmount, unmountRetryDelayMs: 1,
+          onStage: (s) => stages.push(s),
+          spawnFn: (bin, args) => { burnedTo = args[args.length - 1]; return fakeSpawn(0)(); },
+        });
+        assertEq(r.success, true, 'erase-and-burn flow succeeds');
+        assertEq(stages.join(','), 'checking,erasing,burning', 'stages emitted in order');
+        assert(calls.includes('erase quick'), 'drutil erase quick was invoked');
+        assert(burnedTo && burnedTo.startsWith('/dev/disk6='), `burns to the RE-RESOLVED node (/dev/disk6), got ${burnedTo}`);
+        assertEq(r.deviceNode, '/dev/disk6', 'result carries the node actually burned to');
+      }
+      // blank disc → straight to burning, no erase, single status check
+      {
+        const stages = [];
+        const r = await burnWithMediaCheck({
+          isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin,
+          execFileFn: drutilStub(STATUS_BLANK_BDRE), unmountFn: okUnmount, unmountRetryDelayMs: 1,
+          onStage: (s) => stages.push(s), spawnFn: fakeSpawn(0),
+        });
+        assertEq(r.success, true, 'blank disc burns directly');
+        assertEq(stages.join(','), 'checking,burning', 'no erasing stage for blank media');
+      }
+
+      // new friendlyBurnError mappings
+      assert(/already has data/i.test(friendlyBurnError(':-( /dev/disk4 already carries isofs!')),
+        '"already carries isofs" → has-data guidance');
+      assert(/re-mounted|reinsert/i.test(friendlyBurnError(':-( unable to umount: Block device required')),
+        '"Block device required" → remount-race guidance');
+    }
+
 
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
