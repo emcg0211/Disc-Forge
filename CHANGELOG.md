@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.25.3 — 2026-06-11
+
+**Reburn support: erase-and-burn for used BD-RE discs**
+
+- Burning to a disc that already has data on it now works: the app
+  detects non-blank rewritable media (drutil status), asks
+  "Erase and burn?", quick-erases (~1 minute, with progress), and
+  burns — automatically handling the macOS quirk where the burner's
+  device node changes after an erase
+- Write-once BD-R discs with data get a clear explanation instead
+  of a cryptic growisofs failure
+- Pre-burn unmount now retries up to 5x and races macOS's
+  auto-remount correctly (growisofs spawns the instant the unmount
+  succeeds)
+- Friendly messages for "already carries isofs" and
+  "Block device required" growisofs failures
+- 1189 tests
+
 ## v1.25.2 — 2026-06-11
 
 **Interactive menus now verified working on hardware**
