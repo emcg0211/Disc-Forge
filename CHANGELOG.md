@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.25.0 — 2026-06-11
+
+**Fourteen improvements: burn workflow, project safety, UI polish, asar**
+
+Burning:
+- ⏏ Eject Disc button in the burn-success modal (drutil eject — burns
+  still never auto-eject; ejecting is your choice)
+- Opt-in "Verify after burn": re-reads the disc start (first 1 MB, raw
+  device) and compares it against the ISO. Catches a garbage burn or
+  wrong disc instantly; does not detect late-disc corruption. A failed
+  read-back is reported as "could not verify", never as a failed burn
+- Friendly burn errors: the five common growisofs failures (drive busy,
+  disc not blank, calibration area full, disc full, unmount failure) map
+  to plain-language guidance with the raw output kept for diagnostics
+
+Build pipeline:
+- Disk-space preflight on BOTH pipelines: total input size × 2.5 checked
+  against free space (statfsSync, df -k fallback) before a multi-hour
+  build can die of ENOSPC at the packaging step
+- tsMuxeR validation: exit 0 without "Mux successful" is now a failure;
+  outputs are ffprobe-verified (readable, positive duration); the menu
+  clip must actually carry IG packets on PID 0x1400 after injection
+- Concurrent-operation lockout: a second build or burn invoke (e.g.
+  after a renderer reload mid-build) is rejected instead of racing
+
+Projects:
+- .dfp files carry a schemaVersion; loads merge over complete defaults
+  so no field is ever undefined, wrong-typed fields fall back, and
+  newer-version files load with a warning. Also fixes silent data loss:
+  saves previously dropped igMenuConfig (menu template + button labels)
+- Recent projects on the welcome screen (max 8, click to open, vanished
+  files pruned, Clear recent)
+
+UI:
+- All 19 native alert()/confirm() dialogs replaced with in-app modals
+- Title reordering: ↑/↓ buttons on additional-title rows
+- Text input no longer rebuilds the DOM per keystroke (batched renders;
+  caret restoration unchanged — and ig-label inputs, which previously
+  LOST focus every keystroke, now keep it)
+- Menus tab shows a "Menus are OFF" banner with one-click enable
+- Window size/position persist across launches (display-validated)
+
+Packaging:
+- asar enabled (with src/assets unpacked; node-canvas font loading
+  redirected to the unpacked path — native code can't read inside asar)
+
+(The v1.25 plan's other four items — VLC preview, completion
+notifications, real burn progress, npm test + CI — shipped in v1.24.3.)
+- 1150 tests
+
 ## v1.24.3 — 2026-06-10
 
 **Preview in VLC, completion notifications, real burn progress, CI**
