@@ -226,7 +226,8 @@ function burnDisc({ isoPath, deviceNode, growisofsPath = GROWISOFS, onLog = () =
 // stays appended for diagnostics (the burn modal renders it in a <pre>).
 const BURN_ERROR_PATTERNS = [
   [/unable to open.*busy/i, 'The disc drive is busy. Eject any disc and try again.'],
-  [/does not look like.*blank|media is not blank/i, 'The disc is not blank. Use a blank BD-R or an erased BD-RE.'],
+  // growisofs prints "doesn't look like it's blank" (contraction), so match both forms.
+  [/(does not|doesn'?t) look like.*blank|media is not blank/i, 'The disc is not blank. Use a blank BD-R or an erased BD-RE.'],
   [/calibration area (almost )?full/i, 'The disc has too many write sessions. Use a fresh disc.'],
   [/no space left/i, 'The disc is full. Use a larger disc or reduce content.'],
   [/unable to umount/i, 'Could not unmount the disc. Try ejecting and reinserting it.'],

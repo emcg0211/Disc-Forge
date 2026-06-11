@@ -191,33 +191,34 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
     const noDev = await burnDisc({ isoPath: tmpIso, growisofsPath: fakeBin, spawnFn: fakeSpawn(0) });
     assertEq(noDev.success, false, 'no deviceNode → success:false');
 
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-  }
+    // ── 3e: friendly burn error mapping ───────────────────────────────────────────
+    console.log('\n=== 3e: friendlyBurnError ===');
+    {
+      const cases = [
+        [':-( unable to open /dev/disk9: device busy', /drive is busy/i],
+        [':-( media is not blank, aborting', /not blank/i],
+        [":-( /dev/disk9 doesn't look like it's blank", /not blank/i],
+        [':-( calibration area almost full, use a new disc', /too many write sessions/i],
+        [':-( write failed: no space left on device', /disc is full/i],
+        [':-( unable to umount /Volumes/DISC: Block device required', /ejecting and reinserting/i],
+      ];
+      for (const [raw, want] of cases) {
+        const out = friendlyBurnError(raw);
+        assert(want.test(out), `maps: ${raw.slice(0, 44)}…`);
+        assert(out.includes(raw), 'raw text kept for diagnostics');
+      }
+      const unknown = friendlyBurnError('some novel growisofs failure');
+      assertEq(unknown, 'some novel growisofs failure', 'unknown errors pass through unchanged');
 
-  // ── 3e: friendly burn error mapping ──────────────────────────────────────────────
-  console.log('\n=== 3e: friendlyBurnError ===');
-  {
-    const cases = [
-      [':-( unable to open /dev/disk9: device busy', /drive is busy/i],
-      [':-( media is not blank, aborting', /not blank/i],
-      [":-( /dev/disk9 doesn't look like it's blank", /not blank/i],
-      [':-( calibration area almost full, use a new disc', /too many write sessions/i],
-      [':-( write failed: no space left on device', /disc is full/i],
-      [':-( unable to umount /Volumes/DISC: Block device required', /ejecting and reinserting/i],
-    ];
-    for (const [raw, want] of cases) {
-      const out = friendlyBurnError(raw);
-      assert(want.test(out), `maps: ${raw.slice(0, 44)}…`);
-      assert(out.includes(raw), 'raw text kept for diagnostics');
-    }
-    const unknown = friendlyBurnError('some novel growisofs failure');
-    assertEq(unknown, 'some novel growisofs failure', 'unknown errors pass through unchanged');
-
-    // End-to-end: a failing burn surfaces the FRIENDLY message.
-    const r = await burnDisc({
-      isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountFn: okUnmount,
-      spawnFn: (() => {
-        return () => {
+      // End-to-end: a failing burn surfaces the FRIENDLY message.
+      const r = await burnDisc({
+        isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountFn: okUnmount,
+        spawnFn: fakeSpawn(1, []),
+      });
+      assert(r.success === false, 'non-zero exit still fails');
+      const r2 = await burnDisc({
+        isoPath: tmpIso, deviceNode: dev, growisofsPath: fakeBin, unmountFn: okUnmount,
+        spawnFn: (() => () => {
           const proc = new EventEmitter();
           proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
           setImmediate(() => {
@@ -225,10 +226,12 @@ function assertEq(a, b, name) { assert(a === b, name, `expected ${b}, got ${a}`)
             proc.emit('close', 1);
           });
           return proc;
-        };
-      })(),
-    });
-    assert(/not blank/i.test(r.error) && /Use a blank BD-R/.test(r.error), 'burnDisc failure returns the mapped message');
+        })(),
+      });
+      assert(/not blank/i.test(r2.error) && /Use a blank BD-R/.test(r2.error), 'burnDisc failure returns the mapped message');
+    }
+
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
 
   // ── 3d: ejectDisc (drutil eject, seam-injected) ─────────────────────────────────
