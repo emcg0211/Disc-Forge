@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.24.3 — 2026-06-10
+
+**Preview in VLC, completion notifications, real burn progress, CI**
+
+- Preview in VLC: the build-success dialog gains a "▶ Preview in VLC"
+  button that opens the finished ISO via `open -a VLC` — a seconds-fast
+  structural check of the BDMV, menus, and navigation before spending a
+  ~30-minute burn on it. Friendly pointer to videolan.org when VLC isn't
+  installed
+- macOS notifications when the long operations finish: disc builds
+  (success and every failure path of both pipelines) and burns post a
+  system notification, so you can background the app and come back when
+  it's done. Nothing for fast operations, no dock bounce
+- Real burn progress: the burn bar now tracks growisofs's actual write
+  position (both its ISO-burn `( 12.3%)` and mkisofs `12.3% done`
+  formats, careful to ignore the RBU/UBU buffer-fill percents on the
+  same line). Previously the bar sat still for the entire burn
+- Developer: `npm test` runs the whole suite via scripts/test.js with a
+  per-suite summary and proper exit codes; GitHub Actions now runs it on
+  every push and pull request (macos runner, brew-installed ffmpeg so
+  the menu-video suite runs in full)
+- Quality pass: save/load project failures now show an error dialog
+  instead of failing silently; removed a stale render-batching comment
+- 1080 tests
+
 ## v1.24.2 — 2026-06-10
 
 **Two LG BP350 hardware fixes: horizontal button placement + button activation**
