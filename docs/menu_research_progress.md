@@ -584,3 +584,26 @@ Remaining hardware-only candidate if looping persists after this fix: the
 injected IG packets' ATS spacing (300 ticks apart ≈ a >100 Mbps instantaneous
 burst, far above the 48 Mbps BD-ROM TS rate) — a strict read-buffer model
 could object. One variable at a time: not changed in v1.24.1.
+
+---
+
+## v1.25.2 — ATS burst CONFIRMED as the interaction blocker (Jun 11 2026)
+
+Byte analysis of a burned v1.25.1 disc confirmed the candidate flagged in the
+v1.24.1 entry: `injectIGIntoM2ts` stamped injected IG packets 300 ticks apart
+(135 Mbps instantaneous — ~3× the 48 Mbps BD-ROM transport ceiling) while the
+surrounding menu-clip video packets sit ~107,000 ticks apart. The LG BP350's
+demux drops the whole IG burst; the menu video plays (and holds — the v1.24.1
+still fix is hardware-confirmed working) but no IG ever decodes: no button,
+dead remote. All other disc bytes verified correct.
+
+Fix (one variable): injected packets now pace adaptively into the splice
+window — min(3000 ticks target ≈13.5 Mbps, window/(N+1)) with a hard 846-tick
+floor (the 48 Mbps legal minimum); refuses loudly if a display set cannot fit
+legally. Measured on real tsMuxeR output: spacing 2329 ticks (17.4 Mbps),
+fully monotonic across the splice, whole burst arrives in 3.8 ms vs the
+133 ms ICS DTS lead. IG payload bytes, PES timing, and DTS marker nibble all
+untouched (golden hashes unchanged).
+
+Next single variable if hardware still fails: the DTS marker nibble
+(Toast writes the out-of-spec 0x0; we write spec-correct 0x1).

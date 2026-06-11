@@ -627,25 +627,36 @@ console.log('\n=== 10: arrival timestamp fixes (v1.10.11) ===');
   assert(arr1 > arr0, 'arrival timestamps are monotonically increasing (arr1 > arr0)');
   assertEq(arr1 - arr0, 300, 'arrival timestamps spaced by 300 ticks (27MHz / 90kHz)');
 
-  // Fix 3: injectIGIntoM2ts derives baseTimestamp from last video packet before insertion
-  // Build a fake video m2ts: 12 packets with arrival timestamps 1000, 1300, ..., 4300
+  // Fix 3 (UPDATED v1.25.2): injectIGIntoM2ts derives the base ATS from the
+  // last video packet before the splice AND paces the injected packets to fit
+  // the splice window without exceeding the 48 Mbps BD-ROM ceiling. The old
+  // assertions pinned the 300-tick burst pacing (135 Mbps) that the LG BP350's
+  // demux drops — deliberately updated for the hardware fix. The synthetic
+  // video uses realistic 30,000-tick gaps (a low-bitrate menu clip).
   const videoM2ts = Buffer.alloc(12 * 192);
   for (let i = 0; i < 12; i++) {
-    videoM2ts.writeUInt32BE(1000 + i * 300, i * 192);
+    videoM2ts.writeUInt32BE(1000 + i * 30000, i * 192);
     videoM2ts[i * 192 + 4] = 0x47;
   }
   const igTs = Buffer.concat([fakePkt, fakePkt]);  // 2 TS packets
   const combined = injectIGIntoM2ts(videoM2ts, igTs, 10);
-  // IG packets start at packet index 10; arrival of video pkt 9 = 1000 + 9*300 = 3700
-  // IG pkt 0 arrival should be 3700+300=4000, pkt 1 should be 4300
   const igArr0 = combined.readUInt32BE(10 * 192) & 0x3FFFFFFF;
   const igArr1 = combined.readUInt32BE(11 * 192) & 0x3FFFFFFF;
-  const vidBefore = videoM2ts.readUInt32BE(9 * 192) & 0x3FFFFFFF;  // 3700
-  assertEq(igArr0, vidBefore + 300, 'IG pkt[0] arrival = last video pkt arrival + 300');
-  assertEq(igArr1, vidBefore + 600, 'IG pkt[1] arrival monotonically follows pkt[0]');
+  const vidBefore = videoM2ts.readUInt32BE(9 * 192) & 0x3FFFFFFF;  // 271000
+  // window 30000, 3 gaps → spacing capped at the 3000-tick target (≈13.5 Mbps)
+  assertEq(igArr0, vidBefore + 3000, 'IG pkt[0] arrival = last video pkt + 3000 (target spacing)');
+  assertEq(igArr1, vidBefore + 6000, 'IG pkt[1] arrival follows at the same spacing');
+  assert(igArr1 - igArr0 >= 846, 'IG spacing respects the 846-tick (48 Mbps) floor');
   // Video after the injection must not jump backwards
   const vidAfterArr = combined.readUInt32BE(12 * 192) & 0x3FFFFFFF;  // original pkt 10
-  assertEq(vidAfterArr, 1000 + 10 * 300, 'video packets after injection are unmodified');
+  assertEq(vidAfterArr, 1000 + 10 * 30000, 'video packets after injection are unmodified');
+  assert(vidAfterArr > igArr1, 'ATS stays monotonic across the end of the splice');
+  // A window too tight to pace legally must refuse, never emit a burst
+  const tight = Buffer.alloc(12 * 192);
+  for (let i = 0; i < 12; i++) { tight.writeUInt32BE(1000 + i * 300, i * 192); tight[i * 192 + 4] = 0x47; }
+  let threw = false;
+  try { injectIGIntoM2ts(tight, igTs, 10); } catch { threw = true; }
+  assert(threw, 'refuses a splice window that cannot fit IG at the 48 Mbps floor');
 }
 
 console.log('\n=== 11: sound IDs default to 0xFF (v1.10.11) ===');

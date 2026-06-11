@@ -811,14 +811,14 @@ function extractFirstVideoPTS(m2tsBuf) {
  * @param {number} baseTimestamp - 27MHz timestamp for first packet
  * @returns {Buffer} 192-byte BD m2ts packets
  */
-function convertTsBdFormat(tsPackets, baseTimestamp = 0) {
+function convertTsBdFormat(tsPackets, baseTimestamp = 0, spacing = 300) {
   if (tsPackets.length % 188 !== 0) {
     throw new Error(`TS packet stream not aligned to 188 bytes (got ${tsPackets.length} bytes)`);
   }
   const numPackets = tsPackets.length / 188;
   const out = Buffer.alloc(numPackets * 192);
   for (let i = 0; i < numPackets; i++) {
-    const ts = baseTimestamp + i * 300;  // 300 = 1 tick spacing (27MHz / 90kHz)
+    const ts = baseTimestamp + i * spacing;  // spacing in 27MHz ticks per packet
     // 4-byte timestamp: top 30 bits are the 27MHz clock value
     // >>> 0 converts signed 32-bit result to unsigned for writeUInt32BE
     out.writeUInt32BE((ts & 0x3FFFFFFF) >>> 0, i * 192);
@@ -841,13 +841,50 @@ function convertTsBdFormat(tsPackets, baseTimestamp = 0) {
  * @param {number} insertAfterN - insert after this many 192-byte packets (default 10)
  * @returns {Buffer} combined 192-byte BD m2ts
  */
+// ATS pacing for injected IG packets (v1.25.2 hardware fix).
+// The BD-ROM transport ceiling is 48 Mbps → a 188-byte packet may arrive no
+// faster than every 846 ticks of the 27 MHz arrival clock. v1.25.1 and earlier
+// stamped injected packets 300 ticks apart (135 Mbps instantaneous burst);
+// byte analysis of a burned disc confirmed the LG BP350's demux drops the
+// whole burst, so the menu never decodes (no button, dead remote). Target
+// spacing is a comfortable ~13.5 Mbps; it adapts down (never below the legal
+// floor) when the splice-point window is smaller.
+const IG_ATS_TARGET_SPACING = 3000;  // ≈13.5 Mbps
+const IG_ATS_MIN_SPACING    = 846;   // 48 Mbps BD-ROM ceiling
+const ATS_MASK              = 0x3FFFFFFF;  // arrival clock is 30 bits, wraps
+
 function injectIGIntoM2ts(videoM2ts, igTs188, insertAfterN = 10) {
   if (videoM2ts.length % 192 !== 0) {
     throw new Error(`Video m2ts not aligned to 192 bytes (${videoM2ts.length} bytes)`);
   }
-  const beforeIdx = Math.min(insertAfterN - 1, videoM2ts.length / 192 - 1);
-  const beforeArr = videoM2ts.readUInt32BE(beforeIdx * 192) & 0x3FFFFFFF;
-  const igBd = convertTsBdFormat(igTs188, beforeArr + 300);
+  const numVid = videoM2ts.length / 192;
+  const numIg  = igTs188.length / 188;
+  const beforeIdx = Math.min(insertAfterN - 1, numVid - 1);
+  const beforeArr = videoM2ts.readUInt32BE(beforeIdx * 192) & ATS_MASK;
+
+  // All injected packets must stay strictly between the neighbours' ATS so the
+  // file-order arrival clock remains monotonic (wrap-aware: the clock is 30
+  // bits). When inserting at EOF there is no following packet to respect.
+  const hasAfter = insertAfterN < numVid;
+  const afterArr = hasAfter ? (videoM2ts.readUInt32BE(insertAfterN * 192) & ATS_MASK) : null;
+  const window   = hasAfter ? ((afterArr - beforeArr) & ATS_MASK) : Infinity;
+
+  // numIg+1 gaps: before→ig[0], ig[i]→ig[i+1], ig[last]→after.
+  let spacing = Math.min(IG_ATS_TARGET_SPACING, Math.floor(window / (numIg + 1)));
+  if (spacing < IG_ATS_MIN_SPACING) {
+    // Moving the insertion point earlier cannot help: every inter-packet gap
+    // in the head of the mux is the same order of size, so a window that
+    // cannot fit the IG at the legal floor here cannot fit it anywhere.
+    // Refuse loudly rather than emit a disc hardware will reject.
+    throw new Error(
+      `injectIGIntoM2ts: cannot pace ${numIg} IG packets into the ${window}-tick ` +
+      `splice window without exceeding the 48 Mbps BD-ROM ceiling (needs ≥ ` +
+      `${(numIg + 1) * IG_ATS_MIN_SPACING} ticks). The menu display set is too ` +
+      `large for this clip's mux rate.`
+    );
+  }
+
+  const igBd = convertTsBdFormat(igTs188, (beforeArr + spacing) & ATS_MASK, spacing);
   const insertAt = Math.min(insertAfterN * 192, videoM2ts.length);
   return Buffer.concat([
     videoM2ts.slice(0, insertAt),

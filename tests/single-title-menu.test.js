@@ -381,6 +381,48 @@ console.log('\n=== 7: IG stream entries carry language "und" (Toast-identical) =
   assertEq(sci, '0591756e6400', 'MPLS STN IG StreamCodingInfo = 05 91 "und" 00 (byte-identical to Toast)');
 }
 
+// ── 8: v1.25.2 — injected IG ATS pacing (LG BP350 dropped the 135 Mbps burst) ──
+console.log('\n=== 8: injected IG packets are paced under the 48 Mbps ATS ceiling ===');
+{
+  // Real IG stream for the single-title menu + a synthetic video m2ts whose
+  // ATS gaps match a real tsMuxeR menu clip (~107k ticks between packets).
+  const PTS = 54000000;
+  const igTs = mb.buildMenuDisplaySet({ playlists: [0], pts: PTS, labels: ['Play Movie'] });
+  const numIg = igTs.length / 188;
+  const GAP = 107000;
+  const numVid = 40;
+  const video = Buffer.alloc(numVid * 192);
+  for (let i = 0; i < numVid; i++) {
+    video.writeUInt32BE((1000 + i * GAP) & 0x3FFFFFFF, i * 192);
+    video[i * 192 + 4] = 0x47;
+  }
+  const out = mb.injectIGIntoM2ts(video, igTs, 10);
+  const ats = (i) => out.readUInt32BE(i * 192) & 0x3FFFFFFF;
+  const d30 = (a, b) => (b - a) & 0x3FFFFFFF;
+
+  // (1) no >48 Mbps burst: every IG inter-packet delta ≥ 846 ticks
+  let minDelta = Infinity;
+  for (let i = 10; i < 9 + numIg; i++) minDelta = Math.min(minDelta, d30(ats(i), ats(i + 1)));
+  assert(minDelta >= 846, `IG ATS deltas ≥ 846 ticks (min ${minDelta} — was 300 = 135 Mbps burst)`);
+  assert(minDelta <= 3000, `IG ATS deltas ≤ the 3000-tick target (min ${minDelta})`);
+
+  // (2) full-clip monotonicity across the splice (wrap-aware strict increase)
+  let monotonic = true;
+  const total = numVid + numIg;
+  for (let i = 0; i < total - 1; i++) {
+    const d = d30(ats(i), ats(i + 1));
+    if (d === 0 || d > 0x20000000) { monotonic = false; break; }
+  }
+  assert(monotonic, 'ATS strictly increases across video → IG → video at the splice');
+
+  // (3) the whole IG burst arrives well before the ICS decode deadline: its
+  // arrival span must fit inside even the tightest lead the composition gets —
+  // the ICS PTS−DTS lead of 12012 ticks @90kHz = 3,603,600 ticks @27MHz —
+  // independent of how the arrival clock epoch aligns with the PTS timeline.
+  const span = d30(ats(10), ats(9 + numIg));
+  assert(span < 12012 * 300, `IG arrival span ${span} ticks (${(span / 27000).toFixed(1)} ms) < ICS DTS lead (133 ms)`);
+}
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
