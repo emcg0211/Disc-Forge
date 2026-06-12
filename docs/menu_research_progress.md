@@ -626,3 +626,22 @@ arrives within the transport ceiling.
 Pending observations (not yet verified on hardware — do not claim):
 - end-of-clip return-to-menu (the per-button MovieObject JUMP_OBJECT(2) path)
 - arrow-key navigation behavior (multi-button menus)
+
+---
+
+## ✅ v1.25.3 — full single-title menu verification on the LG BP350 (Jun 12 2026)
+
+Hardware-confirmed with a v1.25.3 burn:
+- menu renders with the button SELECTED on boot
+- OK activates the button and plays the video (the JUMP_OBJECT →
+  per-button MovieObject → PLAY_PL transfer path works on hardware)
+- end of the clip returns to the menu (the appended movie object's
+  JUMP_OBJECT(2) tail works)
+
+Of the pending observations listed at v1.25.2, end-of-clip
+return-to-menu is now confirmed — and button activation, implicit in the
+v1.25.2 list, is confirmed too. The single-title menu pipeline is fully
+hardware-verified end to end.
+
+Remaining unverified path (do not claim): arrow-key navigation between
+buttons on a multi-title disc — requires a 2+ episode burn.

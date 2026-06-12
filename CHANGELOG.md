@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.25.4 — 2026-06-12
+
+**Single-title menu fully verified on hardware**
+
+- LG BP350 confirmation: menu renders, button selected on boot,
+  OK plays the video, and end-of-clip JUMP_OBJECT(2) correctly
+  returns to the menu
+- Only remaining unverified path: arrow-key navigation on a
+  multi-title disc
+- 1189 tests
+
 ## v1.25.3 — 2026-06-11
 
 **Reburn support: erase-and-burn for used BD-RE discs**
